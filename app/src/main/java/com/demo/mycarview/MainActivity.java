@@ -1,11 +1,13 @@
 package com.demo.mycarview;
 
 import android.app.Activity;
+import android.app.PictureInPictureParams;
 import android.content.Intent;
 import android.content.pm.ActivityInfo;
 import android.graphics.Bitmap;
 import android.net.Uri;
 import android.os.Bundle;
+import android.util.Rational;
 import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.View;
@@ -13,6 +15,7 @@ import android.view.ViewGroup;
 import android.view.inputmethod.EditorInfo;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
@@ -32,6 +35,8 @@ public class MainActivity extends Activity {
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
+        startForegroundService(new Intent(this, BrowserKeepAliveService.class));
+
         boolean preview = getIntent().getBooleanExtra("car_preview", false);
         if (preview) {
             setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
@@ -142,6 +147,11 @@ public class MainActivity extends Activity {
                 return !("http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme));
             }
 
+            @Override public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+                WebResourceResponse blocked = AdBlocker.intercept(request.getUrl().toString());
+                return blocked != null ? blocked : super.shouldInterceptRequest(view, request);
+            }
+
             @Override public void onPageStarted(WebView view, String url, Bitmap favicon) {
                 address.setText(url);
             }
@@ -187,6 +197,19 @@ public class MainActivity extends Activity {
             u = "https://www.google.com/search?q=" + Uri.encode(u);
         }
         web.loadUrl(u);
+    }
+
+    @Override protected void onUserLeaveHint() {
+        if (customView != null && !isInPictureInPictureMode()) {
+            try {
+                PictureInPictureParams params = new PictureInPictureParams.Builder()
+                        .setAspectRatio(new Rational(16, 9))
+                        .build();
+                enterPictureInPictureMode(params);
+            } catch (Throwable ignored) {
+            }
+        }
+        super.onUserLeaveHint();
     }
 
     @Override public void onBackPressed() {
