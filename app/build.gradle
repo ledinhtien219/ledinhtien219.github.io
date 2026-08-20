@@ -10,8 +10,8 @@ android {
         applicationId 'com.demo.mycarview'
         minSdk 26
         targetSdk 35
-        versionCode 17
-        versionName '0.6.4'
+        versionCode 18
+        versionName '0.6.5'
     }
 
     buildTypes {
@@ -20,7 +20,8 @@ android {
         }
         release {
             minifyEnabled false
-            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt')
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'
+            )
         }
     }
 
