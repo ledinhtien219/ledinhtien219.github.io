@@ -2,12 +2,16 @@ package com.demo.mycarview;
 
 import android.app.Activity;
 import android.app.Application;
+import android.app.PictureInPictureParams;
+import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.util.Rational;
 import android.view.View;
 import android.view.ViewGroup;
 import android.webkit.WebView;
@@ -20,14 +24,8 @@ import java.lang.reflect.Method;
 import java.util.WeakHashMap;
 
 /**
- * Persists the WebView session independently from WebView page callbacks.
- * YouTube mobile is a SPA, so navigation between videos can happen without a
- * reliable onPageFinished() for the final /watch URL. Capturing WebView#getUrl()
- * from the activity lifecycle and periodically while visible makes cold-start
- * resume much more reliable.
- *
- * This application object also runs the best-effort YouTube ad skipper and
- * patches the car UI controls that need to survive YouTube SPA navigation.
+ * Persists the WebView session independently from page callbacks and keeps the
+ * user-enabled media session wired to the currently alive MainActivity WebView.
  */
 public class SessionResumeApplication extends Application implements Application.ActivityLifecycleCallbacks {
     private static final String PREFS = "carview_settings";
@@ -71,6 +69,7 @@ public class SessionResumeApplication extends Application implements Application
             if (activity != null) {
                 installUiFixes(activity);
                 applySavedAspect(activity);
+                configureAutoPip(activity);
                 mainHandler.postDelayed(this, ASPECT_UI_INTERVAL_MS);
             }
         }
@@ -100,6 +99,7 @@ public class SessionResumeApplication extends Application implements Application
 
         installUiFixes(activity);
         applySavedAspect(activity);
+        configureAutoPip(activity);
 
         boolean isFresh = Boolean.TRUE.equals(freshlyCreated.remove(activity));
         if (isFresh) {
@@ -135,12 +135,57 @@ public class SessionResumeApplication extends Application implements Application
         freshlyCreated.remove(activity);
     }
 
+    /** Called by BrowserKeepAliveService / MediaSession transport controls. */
+    public boolean dispatchPlaybackCommand(String command) {
+        Activity activity = currentMain.get();
+        if (activity == null || activity.isDestroyed()) return false;
+        WebView web = findWebView(activity);
+        if (web == null) return false;
+
+        String js;
+        if (BrowserKeepAliveService.CMD_PLAY.equals(command)) {
+            js = "(function(){var v=document.querySelector('video');if(!v)return 'none';try{var p=v.play();if(p&&p.catch)p.catch(function(){});}catch(e){}return 'play';})()";
+        } else if (BrowserKeepAliveService.CMD_PAUSE.equals(command)) {
+            js = "(function(){var v=document.querySelector('video');if(!v)return 'none';try{v.pause();}catch(e){}return 'pause';})()";
+        } else if (BrowserKeepAliveService.CMD_REWIND.equals(command)) {
+            js = "(function(){var v=document.querySelector('video');if(!v)return 'none';v.currentTime=Math.max(0,v.currentTime-10);return v.currentTime;})()";
+        } else if (BrowserKeepAliveService.CMD_FORWARD.equals(command)) {
+            js = "(function(){var v=document.querySelector('video');if(!v)return 'none';var d=isFinite(v.duration)?v.duration:1e12;v.currentTime=Math.min(d,Math.max(0,v.currentTime+10));return v.currentTime;})()";
+        } else {
+            return false;
+        }
+
+        try {
+            web.evaluateJavascript(js, value -> mainHandler.postDelayed(() -> captureSession(activity), 250L));
+            return true;
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
     /**
-     * MainActivity's original controls were intentionally simple. YouTube's SPA
-     * sometimes reports canGoBack() == false even though window.history can go
-     * back, and its video element can be recreated after a ratio change. Patch
-     * the visible controls so both behaviours are reliable.
+     * Android 12+ can automatically enter PiP when the user leaves the app.
+     * We only enable auto-PiP while a video page is open and background playback
+     * is enabled. Older Android versions keep MainActivity's existing fullscreen
+     * PiP behaviour.
      */
+    private void configureAutoPip(Activity activity) {
+        if (Build.VERSION.SDK_INT < 31) return;
+        SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        WebView web = findWebView(activity);
+        boolean enabled = prefs.getBoolean("background_playback", true) &&
+                web != null && isVideoUrl(web.getUrl());
+        try {
+            PictureInPictureParams params = new PictureInPictureParams.Builder()
+                    .setAspectRatio(new Rational(16, 9))
+                    .setAutoEnterEnabled(enabled)
+                    .setSeamlessResizeEnabled(true)
+                    .build();
+            activity.setPictureInPictureParams(params);
+        } catch (Throwable ignored) {
+        }
+    }
+
     private void installUiFixes(Activity activity) {
         View decor = activity.getWindow() != null ? activity.getWindow().getDecorView() : null;
         if (decor == null) return;
@@ -283,8 +328,6 @@ public class SessionResumeApplication extends Application implements Application
         } catch (Throwable ignored) {
         }
 
-        // Keep the native fullscreen host neutral; the DOM video above decides
-        // contain / cover / fill even while WebChromeClient shows customView.
         View custom = findCustomView(activity);
         if (custom != null) {
             custom.setBackgroundColor(Color.BLACK);
@@ -307,20 +350,41 @@ public class SessionResumeApplication extends Application implements Application
         }
         edit.apply();
 
-        if (!isVideoUrl(url)) return;
+        if (!isVideoUrl(url)) {
+            reportPlaybackState(false);
+            return;
+        }
+
         final String capturedUrl = url;
         try {
             web.evaluateJavascript(
-                    "(function(){var v=document.querySelector('video');return v?Math.floor(v.currentTime):-1;})()",
+                    "(function(){var v=document.querySelector('video');if(!v)return '-1|0';return Math.floor(v.currentTime)+'|'+((!v.paused&&!v.ended)?1:0);})()",
                     value -> {
-                        int seconds = parseJsInt(value, -1);
+                        String clean = value == null ? "" : value.replace("\"", "").trim();
+                        String[] parts = clean.split("\\|");
+                        int seconds = parts.length > 0 ? parseInt(parts[0], -1) : -1;
+                        boolean isPlaying = parts.length > 1 && "1".equals(parts[1]);
                         if (seconds >= 0) {
                             getSharedPreferences(PREFS, MODE_PRIVATE).edit()
                                     .putInt("last_video_position_sec", seconds)
                                     .putString("last_video_position_url", capturedUrl)
+                                    .putBoolean("last_video_was_playing", isPlaying)
                                     .apply();
                         }
+                        reportPlaybackState(isPlaying);
                     });
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private void reportPlaybackState(boolean playing) {
+        SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        if (!prefs.getBoolean("background_playback", true)) return;
+        try {
+            Intent i = new Intent(this, BrowserKeepAliveService.class)
+                    .setAction(BrowserKeepAliveService.ACTION_UPDATE_STATE)
+                    .putExtra(BrowserKeepAliveService.EXTRA_PLAYING, playing);
+            startService(i);
         } catch (Throwable ignored) {
         }
     }
@@ -337,6 +401,7 @@ public class SessionResumeApplication extends Application implements Application
                 if (a == null || a.isFinishing() || a.isDestroyed()) return;
                 resumeVideoIfPossible(a);
                 applySavedAspect(a);
+                configureAutoPip(a);
             }, delay);
         }
     }
@@ -427,7 +492,7 @@ public class SessionResumeApplication extends Application implements Application
         }
     }
 
-    private int parseJsInt(String value, int fallback) {
+    private int parseInt(String value, int fallback) {
         if (value == null) return fallback;
         try {
             String clean = value.replace("\"", "").trim();
