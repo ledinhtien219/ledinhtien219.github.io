@@ -9,7 +9,7 @@
     <application
         android:allowBackup="true"
         android:icon="@android:drawable/ic_media_play"
-        android:label="MyCar View Demo"
+        android:label="MyCar View AA"
         android:theme="@android:style/Theme.Material.NoActionBar"
         android:usesCleartextTraffic="false">
 
@@ -44,7 +44,7 @@
             android:foregroundServiceType="specialUse">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="User-enabled draggable floating speed bubble demo" />
+                android:value="User-enabled draggable floating speed bubble" />
         </service>
     </application>
 </manifest>
