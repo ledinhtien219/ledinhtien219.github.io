@@ -6,7 +6,6 @@ import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.graphics.Canvas;
 import android.graphics.Paint;
-import android.graphics.Path;
 import android.graphics.Rect;
 import android.location.Location;
 import android.location.LocationListener;
@@ -24,22 +23,19 @@ import androidx.car.app.Screen;
 import androidx.car.app.SurfaceCallback;
 import androidx.car.app.SurfaceContainer;
 import androidx.car.app.model.Action;
-import androidx.car.app.model.Pane;
-import androidx.car.app.model.PaneTemplate;
-import androidx.car.app.model.Row;
+import androidx.car.app.model.ActionStrip;
 import androidx.car.app.model.Template;
-import androidx.car.app.navigation.model.MapWithContentTemplate;
+import androidx.car.app.navigation.model.NavigationTemplate;
 import androidx.lifecycle.DefaultLifecycleObserver;
 import androidx.lifecycle.LifecycleOwner;
 
 import java.util.Map;
 
 /**
- * Stable Android Auto Road HUD.
+ * Android Auto HUD-only screen.
  *
- * Dynamic speed/road data is rendered on the app-owned map surface. The Android
- * Auto template itself stays mostly static so the host is not rebuilt every second.
- * Surface access is serialized to avoid drawing while the host destroys/replaces it.
+ * The app owns the map surface and keeps only a compact speed card inside the
+ * host-provided visible area. No large Pane/MapWithContent overlay is requested.
  */
 public class CarViewCarScreen extends Screen {
     private static final String PREFS = "carview_settings";
@@ -54,10 +50,6 @@ public class CarViewCarScreen extends Screen {
 
     private volatile int speedKmh;
     private volatile String speedSource = "waze";
-    private volatile String speedLimit = "--";
-    private volatile String nextSpeedLimit = "--";
-    private volatile int cameraDistanceM = -1;
-    private volatile int nextLimitDistanceM = -1;
     private volatile double latitude = Double.NaN;
 
     private final Runnable refreshRunnable = new Runnable() {
@@ -77,7 +69,6 @@ public class CarViewCarScreen extends Screen {
         try {
             carContext.getCarService(AppManager.class).setSurfaceCallback(renderer);
         } catch (Throwable ignored) {
-            // A host without a drawable map surface can still show the Pane fallback.
         }
 
         getLifecycle().addObserver(new DefaultLifecycleObserver() {
@@ -111,39 +102,23 @@ public class CarViewCarScreen extends Screen {
     @Override
     public Template onGetTemplate() {
         readPrefsCompat();
-        PaneTemplate content = buildSafePane();
 
-        if (getCarContext().getCarAppApiLevel() >= 7) {
-            try {
-                return new MapWithContentTemplate.Builder()
-                        .setContentTemplate(content)
-                        .build();
-            } catch (Throwable ignored) {
-                // Some OEM hosts are stricter than DHU; fall back instead of disconnecting.
-            }
-        }
-        return content;
-    }
-
-    private PaneTemplate buildSafePane() {
-        Row status = new Row.Builder()
-                .setTitle(displaySource())
-                .addText("Road HUD · dữ liệu cập nhật trên bảng phía trên")
+        // NavigationTemplate leaves the app-owned surface visible without the
+        // large host-rendered Pane that previously covered most of the screen.
+        Action gps = new Action.Builder()
+                .setTitle("GPS")
+                .setOnClickListener(() -> {
+                    readPrefsCompat();
+                    renderer.scheduleDraw();
+                })
                 .build();
 
-        Row detail = new Row.Builder()
-                .setTitle("Tốc độ " + speedKmh + " km/h")
-                .addText("Giới hạn " + displayLimitText() + " · " + displayCameraText())
+        ActionStrip strip = new ActionStrip.Builder()
+                .addAction(gps)
                 .build();
 
-        Pane pane = new Pane.Builder()
-                .addRow(status)
-                .addRow(detail)
-                .build();
-
-        return new PaneTemplate.Builder(pane)
-                .setHeaderAction(Action.APP_ICON)
-                .setTitle("CarView Road HUD")
+        return new NavigationTemplate.Builder()
+                .setActionStrip(strip)
                 .build();
     }
 
@@ -157,19 +132,7 @@ public class CarViewCarScreen extends Screen {
         }
 
         speedSource = valueAsString(all.get("speed_source"), "waze").toLowerCase();
-        speedLimit = normalizeLimit(valueAsString(all.get("limit"), "--"));
-        nextSpeedLimit = normalizeLimit(valueAsString(all.get("next_limit"), "--"));
-        cameraDistanceM = valueAsInt(all.get("camera_distance_m"), -1);
-        nextLimitDistanceM = valueAsInt(all.get("next_limit_distance_m"), -1);
         speedKmh = clamp(valueAsInt(all.get("speed"), speedKmh), 0, 300);
-
-        if ("waze".equals(speedSource)) {
-            // Waze consumer app has no public camera/limit feed; never fabricate it.
-            speedLimit = "--";
-            nextSpeedLimit = "--";
-            cameraDistanceM = -1;
-            nextLimitDistanceM = -1;
-        }
     }
 
     private String valueAsString(Object value, String fallback) {
@@ -191,37 +154,11 @@ public class CarViewCarScreen extends Screen {
         return Math.max(min, Math.min(max, value));
     }
 
-    private String normalizeLimit(String value) {
-        try {
-            int n = Integer.parseInt(value.trim());
-            return (n > 0 && n <= 200) ? String.valueOf(n) : "--";
-        } catch (Throwable ignored) {
-            return "--";
-        }
-    }
-
-    private String displayLimitText() {
-        return "--".equals(speedLimit) ? "--" : speedLimit + " km/h";
-    }
-
-    private String displayCameraText() {
-        return cameraDistanceM >= 0 ? "Camera " + formatDistance(cameraDistanceM) : "Camera --";
-    }
-
     private String displaySource() {
         if ("waze".equals(speedSource)) return "WAZE · GPS";
         if ("vietmap".equals(speedSource)) return "VIETMAP LIVE";
         if ("wyn".equals(speedSource)) return "WYN";
         return speedSource == null ? "GPS" : speedSource.toUpperCase();
-    }
-
-    private String formatDistance(int meters) {
-        if (meters < 0) return "--";
-        if (meters < 1000) return meters + "m";
-        float km = meters / 1000f;
-        return km < 10f
-                ? String.format(java.util.Locale.US, "%.1fkm", km)
-                : Math.round(km) + "km";
     }
 
     private void startLocationUpdates() {
@@ -270,7 +207,6 @@ public class CarViewCarScreen extends Screen {
     private final class MapSurfaceRenderer implements SurfaceCallback {
         private final Object surfaceLock = new Object();
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Path cameraShape = new Path();
 
         @Nullable private Surface surface;
         private int width;
@@ -337,9 +273,9 @@ public class CarViewCarScreen extends Screen {
                 try {
                     canvas = target.lockCanvas(null);
                     drawBackground(canvas, width, height);
-                    drawRoadHud(canvas, width, height, visibleArea);
+                    drawSpeedHud(canvas, width, height, visibleArea);
                 } catch (Throwable ignored) {
-                    // Do not let an OEM Surface lifecycle race disconnect the car session.
+                    // Surface lifecycle races must never disconnect the car session.
                 } finally {
                     if (canvas != null) {
                         try { target.unlockCanvasAndPost(canvas); } catch (Throwable ignored) {}
@@ -350,6 +286,7 @@ public class CarViewCarScreen extends Screen {
 
         private void drawBackground(Canvas canvas, int w, int h) {
             canvas.drawColor(0xFF080C10);
+
             paint.setStyle(Paint.Style.STROKE);
             paint.setStrokeWidth(Math.max(2f, w / 500f));
             paint.setColor(0xFF1A2730);
@@ -357,87 +294,73 @@ public class CarViewCarScreen extends Screen {
                 float y = h * (0.18f + i * 0.11f);
                 canvas.drawLine(0, y, w, y - h * 0.10f, paint);
             }
+
             paint.setStrokeWidth(Math.max(5f, w / 190f));
             paint.setColor(0xFF364854);
             canvas.drawLine(w * 0.05f, h * 0.78f, w * 0.95f, h * 0.30f, paint);
+
+            paint.setStrokeWidth(Math.max(7f, w / 140f));
+            paint.setColor(0xFF3FA7FF);
+            canvas.drawLine(w * 0.18f, h * 0.67f, w * 0.83f, h * 0.34f, paint);
         }
 
-        private void drawRoadHud(Canvas canvas, int w, int h, Rect area) {
-            float left = area.isEmpty() ? w * 0.025f : Math.max(w * 0.025f, area.left + w * 0.012f);
-            float right = area.isEmpty() ? w * 0.975f : Math.min(w * 0.975f, area.right - w * 0.012f);
-            if (right <= left) { left = w * 0.025f; right = w * 0.975f; }
+        private void drawSpeedHud(Canvas canvas, int w, int h, Rect area) {
+            float safeLeft = area.isEmpty() ? 0f : area.left;
+            float safeTop = area.isEmpty() ? 0f : area.top;
+            float safeRight = area.isEmpty() ? w : area.right;
+            float safeBottom = area.isEmpty() ? h : area.bottom;
 
-            float top = area.isEmpty() ? h * 0.035f : Math.max(h * 0.035f, area.top + h * 0.02f);
-            float panelW = Math.max(w * 0.60f, right - left);
-            panelW = Math.min(panelW, w - left - w * 0.02f);
-            float panelH = Math.max(110f, Math.min(h * 0.30f, h - top - 20f));
-            float bottom = top + panelH;
-            float radius = Math.max(18f, w / 70f);
-
-            paint.setStyle(Paint.Style.FILL);
-            paint.setColor(0xEE11171D);
-            canvas.drawRoundRect(left, top, left + panelW, bottom, radius, radius, paint);
-
-            paint.setColor(0xFFE9EEF2);
-            paint.setFakeBoldText(true);
-            paint.setTextAlign(Paint.Align.LEFT);
-            paint.setTextSize(Math.max(15f, panelH * 0.14f));
-            canvas.drawText(displaySource(), left + panelW * 0.03f, top + panelH * 0.19f, paint);
-            paint.setFakeBoldText(false);
-
-            float contentTop = top + panelH * 0.28f;
-            float contentH = panelH * 0.62f;
-            float colW = panelW / 4f;
-            float cy = contentTop + contentH * 0.42f;
-            float r = Math.min(colW * 0.22f, contentH * 0.34f);
-
-            for (int i = 1; i < 4; i++) {
-                float x = left + colW * i;
-                paint.setColor(0xFF2A333A);
-                paint.setStrokeWidth(1.5f);
-                canvas.drawLine(x, contentTop, x, bottom - panelH * 0.08f, paint);
+            if (safeRight <= safeLeft || safeBottom <= safeTop) {
+                safeLeft = 0f;
+                safeTop = 0f;
+                safeRight = w;
+                safeBottom = h;
             }
 
-            drawLimit(canvas, left + colW * 0.5f, cy, r, speedLimit, null);
-            drawSpeed(canvas, left + colW * 1.5f, cy, r, speedKmh);
-            drawCamera(canvas, left + colW * 2.5f, cy, r, cameraDistanceM);
-            drawLimit(canvas, left + colW * 3.5f, cy, r, nextSpeedLimit,
-                    nextLimitDistanceM >= 0 ? formatDistance(nextLimitDistanceM) : "--");
+            float cardW = Math.max(165f, Math.min(w * 0.18f, 245f));
+            float cardH = Math.max(115f, Math.min(h * 0.27f, 170f));
+            cardW = Math.min(cardW, Math.max(120f, safeRight - safeLeft - 16f));
+            cardH = Math.min(cardH, Math.max(100f, safeBottom - safeTop - 16f));
 
-            paint.setTextAlign(Paint.Align.LEFT);
-            paint.setFakeBoldText(false);
-        }
+            float right = safeRight - 10f;
+            float left = Math.max(safeLeft + 8f, right - cardW);
+            float top = safeTop + 8f;
+            float bottom = top + cardH;
+            float radius = Math.max(16f, cardH * 0.12f);
 
-        private void drawLimit(Canvas canvas, float cx, float cy, float r, String limit, @Nullable String distance) {
             paint.setStyle(Paint.Style.FILL);
-            paint.setColor(0xFFF7F7F7);
-            canvas.drawCircle(cx, cy, r, paint);
+            paint.setColor(0xE9141A1F);
+            canvas.drawRoundRect(left, top, right, bottom, radius, radius, paint);
+
             paint.setStyle(Paint.Style.STROKE);
-            paint.setStrokeWidth(Math.max(4f, r * 0.15f));
-            paint.setColor(0xFFFF3030);
-            canvas.drawCircle(cx, cy, r * 0.91f, paint);
+            paint.setStrokeWidth(2f);
+            paint.setColor(0xFF29343D);
+            canvas.drawRoundRect(left + 1f, top + 1f, right - 1f, bottom - 1f, radius, radius, paint);
 
+            float padding = Math.max(10f, cardW * 0.07f);
             paint.setStyle(Paint.Style.FILL);
-            paint.setTextAlign(Paint.Align.CENTER);
-            paint.setColor(0xFF121212);
+            paint.setTextAlign(Paint.Align.LEFT);
             paint.setFakeBoldText(true);
-            paint.setTextSize(Math.max(16f, r * 0.76f));
-            canvas.drawText(limit == null ? "--" : limit, cx, cy + r * 0.27f, paint);
+            paint.setColor(0xFFE8EDF2);
+            paint.setTextSize(Math.max(15f, cardH * 0.12f));
+            canvas.drawText(displaySource(), left + padding, top + cardH * 0.20f, paint);
+
             paint.setFakeBoldText(false);
+            paint.setColor(0xFF94A5B2);
+            paint.setTextSize(Math.max(10f, cardH * 0.085f));
+            canvas.drawText(Double.isNaN(latitude) ? "GPS đang chờ" : "GPS trực tiếp",
+                    left + padding, top + cardH * 0.34f, paint);
 
-            if (distance != null) {
-                paint.setColor(0xFFE5E9EC);
-                paint.setTextSize(Math.max(10f, r * 0.40f));
-                canvas.drawText(distance, cx, cy + r * 1.50f, paint);
-            }
-        }
+            float cx = left + cardW * 0.50f;
+            float cy = top + cardH * 0.69f;
+            float r = Math.min(cardW * 0.21f, cardH * 0.25f);
 
-        private void drawSpeed(Canvas canvas, float cx, float cy, float r, int speed) {
             paint.setStyle(Paint.Style.FILL);
             paint.setColor(0xFFF8F8F8);
             canvas.drawCircle(cx, cy, r, paint);
+
             paint.setStyle(Paint.Style.STROKE);
-            paint.setStrokeWidth(Math.max(4f, r * 0.11f));
+            paint.setStrokeWidth(Math.max(4f, r * 0.12f));
             paint.setColor(0xFF2878FF);
             canvas.drawCircle(cx, cy, r * 0.93f, paint);
 
@@ -445,41 +368,15 @@ public class CarViewCarScreen extends Screen {
             paint.setTextAlign(Paint.Align.CENTER);
             paint.setColor(0xFF101820);
             paint.setFakeBoldText(true);
-            paint.setTextSize(Math.max(16f, r * 0.74f));
-            canvas.drawText(String.valueOf(speed), cx, cy + r * 0.10f, paint);
+            paint.setTextSize(Math.max(17f, r * 0.78f));
+            String speedText = Double.isNaN(latitude) ? "--" : String.valueOf(speedKmh);
+            canvas.drawText(speedText, cx, cy + r * 0.10f, paint);
+
             paint.setFakeBoldText(false);
             paint.setTextSize(Math.max(9f, r * 0.28f));
             canvas.drawText("km/h", cx, cy + r * 0.52f, paint);
-        }
 
-        private void drawCamera(Canvas canvas, float cx, float cy, float r, int distanceM) {
-            paint.setStyle(Paint.Style.FILL);
-            paint.setColor(0xFFF7F7F7);
-            canvas.drawCircle(cx, cy, r, paint);
-            paint.setStyle(Paint.Style.STROKE);
-            paint.setStrokeWidth(Math.max(4f, r * 0.15f));
-            paint.setColor(0xFFFF3030);
-            canvas.drawCircle(cx, cy, r * 0.91f, paint);
-
-            paint.setStyle(Paint.Style.FILL);
-            paint.setColor(0xFF111111);
-            float bw = r * 0.90f;
-            float bh = r * 0.42f;
-            canvas.drawRoundRect(cx - bw * 0.46f, cy - bh * 0.45f,
-                    cx + bw * 0.28f, cy + bh * 0.45f, r * 0.08f, r * 0.08f, paint);
-            cameraShape.reset();
-            cameraShape.moveTo(cx + bw * 0.23f, cy - bh * 0.28f);
-            cameraShape.lineTo(cx + bw * 0.53f, cy - bh * 0.58f);
-            cameraShape.lineTo(cx + bw * 0.53f, cy + bh * 0.58f);
-            cameraShape.lineTo(cx + bw * 0.23f, cy + bh * 0.28f);
-            cameraShape.close();
-            canvas.drawPath(cameraShape, paint);
-
-            paint.setTextAlign(Paint.Align.CENTER);
-            paint.setColor(0xFFE5E9EC);
-            paint.setTextSize(Math.max(10f, r * 0.40f));
-            canvas.drawText(distanceM >= 0 ? formatDistance(distanceM) : "--",
-                    cx, cy + r * 1.50f, paint);
+            paint.setTextAlign(Paint.Align.LEFT);
         }
     }
 }
