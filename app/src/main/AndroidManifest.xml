@@ -11,6 +11,10 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- Android for Cars App Library: map-based templated app. -->
+    <uses-permission android:name="androidx.car.app.MAP_TEMPLATES" />
+    <uses-permission android:name="androidx.car.app.ACCESS_SURFACE" />
+
     <queries>
         <package android:name="vn.vietmap.live" />
         <package android:name="vn.vietmap.live.v2" />
@@ -20,7 +24,7 @@
     <application
         android:name=".SessionResumeApplication"
         android:allowBackup="true"
-        android:icon="@android:drawable/ic_media_play"
+        android:icon="@android:drawable/ic_menu_mapmode"
         android:label="CarView AA"
         android:theme="@android:style/Theme.Material.NoActionBar"
         android:usesCleartextTraffic="false">
@@ -28,6 +32,9 @@
         <meta-data
             android:name="com.google.android.gms.car.application"
             android:resource="@xml/automotive_app_desc" />
+        <meta-data
+            android:name="androidx.car.app.minCarApiLevel"
+            android:value="1" />
 
         <activity
             android:name=".SettingsActivity"
@@ -45,12 +52,15 @@
             </intent-filter>
         </activity>
 
+        <!-- Android Auto entry point. The host renders the template chrome; the app owns the map surface. -->
         <service
-            android:name=".CarMediaBrowserService"
-            android:label="CarView AA"
+            android:name=".CarViewCarAppService"
+            android:label="CarView Drive"
+            android:icon="@android:drawable/ic_menu_mapmode"
             android:exported="true">
             <intent-filter>
-                <action android:name="android.media.browse.MediaBrowserService" />
+                <action android:name="androidx.car.app.CarAppService" />
+                <category android:name="androidx.car.app.category.POI" />
             </intent-filter>
         </service>
 
