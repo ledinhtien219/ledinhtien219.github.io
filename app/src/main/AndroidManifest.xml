@@ -11,9 +11,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
-    <!-- Android for Cars: app-owned navigation surface with a compact HUD only. -->
-    <uses-permission android:name="androidx.car.app.NAVIGATION_TEMPLATES" />
-    <uses-permission android:name="androidx.car.app.ACCESS_SURFACE" />
+    <!-- Host-rendered Android Auto map for the CarView Drive POI entry. -->
+    <uses-permission android:name="androidx.car.app.MAP_TEMPLATES" />
 
     <queries>
         <package android:name="vn.vietmap.live" />
@@ -52,7 +51,7 @@
             </intent-filter>
         </activity>
 
-        <!-- Android Auto entry point. NavigationTemplate keeps the surface unobstructed. -->
+        <!-- Android Auto opens an actual host-rendered map instead of the old fake surface. -->
         <service
             android:name=".CarViewCarAppService"
             android:label="CarView Drive"
@@ -60,7 +59,7 @@
             android:exported="true">
             <intent-filter>
                 <action android:name="androidx.car.app.CarAppService" />
-                <category android:name="androidx.car.app.category.NAVIGATION" />
+                <category android:name="androidx.car.app.category.POI" />
             </intent-filter>
         </service>
 
