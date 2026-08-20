@@ -11,6 +11,7 @@ import android.os.Bundle;
 import android.util.Rational;
 import android.view.Gravity;
 import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.inputmethod.EditorInfo;
@@ -41,15 +42,15 @@ public class MainActivity extends Activity {
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         syncBackgroundService();
 
-        boolean preview = getIntent().getBooleanExtra("car_preview", false);
-        if (preview) {
+        boolean carMode = getIntent().getBooleanExtra("car_preview", false);
+        if (carMode) {
             setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
             getWindow().getDecorView().setSystemUiVisibility(
                     View.SYSTEM_UI_FLAG_FULLSCREEN |
                     View.SYSTEM_UI_FLAG_HIDE_NAVIGATION |
                     View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
         }
-        build(preview);
+        build(carMode);
 
         String startUrl = HOME;
         if (prefs.getBoolean("auto_resume", true)) {
@@ -73,23 +74,24 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void build(boolean preview) {
+    private void build(boolean carMode) {
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(Ui.BG);
 
         LinearLayout page = new LinearLayout(this);
         page.setOrientation(LinearLayout.VERTICAL);
-        page.setPadding(Ui.dp(this, preview ? 8 : 16), Ui.dp(this, 8), Ui.dp(this, preview ? 8 : 16), Ui.dp(this, 8));
+        page.setPadding(Ui.dp(this, carMode ? 8 : 16), Ui.dp(this, 8), Ui.dp(this, carMode ? 8 : 16), Ui.dp(this, 8));
         root.addView(page, new FrameLayout.LayoutParams(-1, -1));
 
-        TextView title = Ui.text(this, preview ? "CarView AA  •  CAR PREVIEW" : "CarView AA", preview ? 17 : 28, Ui.TEXT, true);
-        page.addView(title, new LinearLayout.LayoutParams(-1, Ui.dp(this, preview ? 36 : 64)));
+        LinearLayout titleArea = new LinearLayout(this);
+        titleArea.setOrientation(LinearLayout.VERTICAL);
+        TextView title = Ui.text(this, "CarView AA", carMode ? 17 : 28, Ui.TEXT, true);
+        TextView subtitle = Ui.text(this, "YouTube for the road", carMode ? 11 : 14, Ui.MUTED, false);
+        titleArea.addView(title, new LinearLayout.LayoutParams(-1, 0, 2));
+        titleArea.addView(subtitle, new LinearLayout.LayoutParams(-1, 0, 1));
+        page.addView(titleArea, new LinearLayout.LayoutParams(-1, Ui.dp(this, carMode ? 42 : 68)));
 
-        if (preview && prefs.getBoolean("bubble_enabled", false)) {
-            page.addView(buildVietMapWidget(), new LinearLayout.LayoutParams(-1, Ui.dp(this, 112)));
-        }
-
-        if (!preview) {
+        if (!carMode) {
             LinearLayout bar = new LinearLayout(this);
             bar.setGravity(Gravity.CENTER_VERTICAL);
             page.addView(bar, new LinearLayout.LayoutParams(-1, Ui.dp(this, 72)));
@@ -121,7 +123,6 @@ public class MainActivity extends Activity {
 
         browserHost = new FrameLayout(this);
         LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(-1, 0, 1);
-        if (preview) bp.setMargins(0, Ui.dp(this, 7), 0, 0);
         page.addView(browserHost, bp);
         web = new WebView(this);
         browserHost.addView(web, new FrameLayout.LayoutParams(-1, -1));
@@ -129,7 +130,7 @@ public class MainActivity extends Activity {
 
         LinearLayout tools = new LinearLayout(this);
         tools.setGravity(Gravity.CENTER);
-        LinearLayout.LayoutParams tp = new LinearLayout.LayoutParams(-1, Ui.dp(this, preview ? 54 : 78));
+        LinearLayout.LayoutParams tp = new LinearLayout.LayoutParams(-1, Ui.dp(this, carMode ? 54 : 78));
         tp.setMargins(0, Ui.dp(this, 7), 0, 0);
         page.addView(tools, tp);
 
@@ -139,52 +140,123 @@ public class MainActivity extends Activity {
         addTool(tools, "↻", v -> web.reload());
         addTool(tools, "⚙", v -> startActivity(new Intent(this, SettingsActivity.class)));
 
+        if (carMode && prefs.getBoolean("bubble_enabled", false)) {
+            addDraggableCarBubble(root);
+        }
+
         setContentView(root);
     }
 
-    private View buildVietMapWidget() {
-        LinearLayout card = new LinearLayout(this);
-        card.setOrientation(LinearLayout.VERTICAL);
-        card.setPadding(Ui.dp(this, 12), Ui.dp(this, 7), Ui.dp(this, 12), Ui.dp(this, 8));
-        card.setBackground(Ui.rounded(0xFF121A25, 0xFF253548, 18, this));
+    private void addDraggableCarBubble(FrameLayout root) {
+        LinearLayout bubble = new LinearLayout(this);
+        bubble.setGravity(Gravity.CENTER);
+        boolean expanded = prefs.getBoolean("car_bubble_expanded", false);
+        renderCarBubble(bubble, expanded);
 
-        LinearLayout header = new LinearLayout(this);
-        header.setGravity(Gravity.CENTER_VERTICAL);
-        TextView vmIcon = Ui.text(this, "●", 15, 0xFFFFC928, true);
-        TextView vmTitle = Ui.text(this, "  VIETMAP LIVE", 14, Ui.TEXT, true);
-        header.addView(vmIcon, new LinearLayout.LayoutParams(Ui.dp(this, 20), -1));
-        header.addView(vmTitle, new LinearLayout.LayoutParams(0, -1, 1));
-        card.addView(header, new LinearLayout.LayoutParams(-1, Ui.dp(this, 24)));
+        int compact = Ui.dp(this, 92);
+        int expandedWidth = Ui.dp(this, 430);
+        int height = Ui.dp(this, 92);
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(expanded ? expandedWidth : compact, height);
+        lp.leftMargin = prefs.getInt("car_bubble_x", Ui.dp(this, 24));
+        lp.topMargin = prefs.getInt("car_bubble_y", Ui.dp(this, 70));
+        root.addView(bubble, lp);
+        bubble.bringToFront();
 
-        LinearLayout data = new LinearLayout(this);
-        data.setGravity(Gravity.CENTER_VERTICAL);
-        card.addView(data, new LinearLayout.LayoutParams(-1, 0, 1));
+        bubble.setOnTouchListener(new View.OnTouchListener() {
+            float downRawX, downRawY;
+            int startX, startY;
+            boolean dragged;
+
+            @Override public boolean onTouch(View v, MotionEvent event) {
+                FrameLayout.LayoutParams p = (FrameLayout.LayoutParams) v.getLayoutParams();
+                switch (event.getActionMasked()) {
+                    case MotionEvent.ACTION_DOWN:
+                        downRawX = event.getRawX();
+                        downRawY = event.getRawY();
+                        startX = p.leftMargin;
+                        startY = p.topMargin;
+                        dragged = false;
+                        v.setAlpha(.92f);
+                        return true;
+                    case MotionEvent.ACTION_MOVE:
+                        int dx = (int) (event.getRawX() - downRawX);
+                        int dy = (int) (event.getRawY() - downRawY);
+                        if (Math.abs(dx) > Ui.dp(MainActivity.this, 4) || Math.abs(dy) > Ui.dp(MainActivity.this, 4)) {
+                            dragged = true;
+                        }
+                        int maxX = Math.max(0, root.getWidth() - v.getWidth());
+                        int maxY = Math.max(0, root.getHeight() - v.getHeight());
+                        p.leftMargin = Math.max(0, Math.min(maxX, startX + dx));
+                        p.topMargin = Math.max(0, Math.min(maxY, startY + dy));
+                        v.setLayoutParams(p);
+                        return true;
+                    case MotionEvent.ACTION_UP:
+                    case MotionEvent.ACTION_CANCEL:
+                        v.setAlpha(1f);
+                        prefs.edit()
+                                .putInt("car_bubble_x", p.leftMargin)
+                                .putInt("car_bubble_y", p.topMargin)
+                                .apply();
+                        if (!dragged && event.getActionMasked() == MotionEvent.ACTION_UP) {
+                            boolean nowExpanded = !prefs.getBoolean("car_bubble_expanded", false);
+                            prefs.edit().putBoolean("car_bubble_expanded", nowExpanded).apply();
+                            renderCarBubble(bubble, nowExpanded);
+                            p.width = nowExpanded ? expandedWidth : compact;
+                            int maxX = Math.max(0, root.getWidth() - p.width);
+                            p.leftMargin = Math.min(p.leftMargin, maxX);
+                            bubble.setLayoutParams(p);
+                        }
+                        return true;
+                    default:
+                        return false;
+                }
+            }
+        });
+    }
+
+    private void renderCarBubble(LinearLayout bubble, boolean expanded) {
+        bubble.removeAllViews();
+        bubble.setOrientation(expanded ? LinearLayout.HORIZONTAL : LinearLayout.VERTICAL);
+        bubble.setPadding(Ui.dp(this, 7), Ui.dp(this, 7), Ui.dp(this, 7), Ui.dp(this, 7));
+        bubble.setBackground(Ui.rounded(0xF2171D26, 0xFF2A3A4D, 28, this));
 
         String limit = prefs.getString("limit", "80");
         String speed = prefs.getString("speed", "0");
-        data.addView(speedTile(limit, "GIỚI HẠN", true), new LinearLayout.LayoutParams(0, -1, 1));
-        data.addView(speedTile(speed, "km/h", false), new LinearLayout.LayoutParams(0, -1, 1));
-        if (prefs.getBoolean("bubble_camera_zone", true)) {
-            data.addView(speedTile("📷", "camera", true), new LinearLayout.LayoutParams(0, -1, 1));
-            data.addView(speedTile("50", "khu dân cư", true), new LinearLayout.LayoutParams(0, -1, 1));
+
+        if (!expanded) {
+            TextView limitView = Ui.text(this, limit, 25, Ui.TEXT, true);
+            limitView.setGravity(Gravity.CENTER);
+            limitView.setBackground(Ui.rounded(0xFF0B0E13, 0xFFFF3B30, 35, this));
+            bubble.addView(limitView, new LinearLayout.LayoutParams(-1, 0, 2));
+
+            TextView speedView = Ui.text(this, speed + " km/h", 11, Ui.ACCENT, true);
+            speedView.setGravity(Gravity.CENTER);
+            bubble.addView(speedView, new LinearLayout.LayoutParams(-1, 0, 1));
+            return;
         }
-        return card;
+
+        bubble.addView(speedTile(limit, "GIỚI HẠN", true), new LinearLayout.LayoutParams(0, -1, 1));
+        bubble.addView(speedTile(speed, "km/h", false), new LinearLayout.LayoutParams(0, -1, 1));
+        if (prefs.getBoolean("bubble_camera_zone", true)) {
+            bubble.addView(speedTile("📷", "269m", true), new LinearLayout.LayoutParams(0, -1, 1));
+            bubble.addView(speedTile("50", "67m", true), new LinearLayout.LayoutParams(0, -1, 1));
+        }
     }
 
     private View speedTile(String main, String sub, boolean warning) {
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
         box.setGravity(Gravity.CENTER);
-        box.setPadding(Ui.dp(this, 4), Ui.dp(this, 3), Ui.dp(this, 4), Ui.dp(this, 3));
+        box.setPadding(Ui.dp(this, 3), Ui.dp(this, 3), Ui.dp(this, 3), Ui.dp(this, 3));
 
-        TextView primary = Ui.text(this, main, main.length() > 2 ? 20 : 25, Ui.TEXT, true);
+        TextView primary = Ui.text(this, main, main.length() > 2 ? 18 : 23, Ui.TEXT, true);
         primary.setGravity(Gravity.CENTER);
         primary.setBackground(Ui.rounded(0xFF090D12, warning ? 0xFFE43A35 : 0xFF4EA7FF, 30, this));
-        box.addView(primary, new LinearLayout.LayoutParams(Ui.dp(this, 62), Ui.dp(this, 52)));
+        box.addView(primary, new LinearLayout.LayoutParams(Ui.dp(this, 58), Ui.dp(this, 50)));
 
-        TextView secondary = Ui.text(this, sub, 12, Ui.MUTED, false);
+        TextView secondary = Ui.text(this, sub, 11, Ui.MUTED, false);
         secondary.setGravity(Gravity.CENTER);
-        box.addView(secondary, new LinearLayout.LayoutParams(-1, Ui.dp(this, 22)));
+        box.addView(secondary, new LinearLayout.LayoutParams(-1, Ui.dp(this, 20)));
         return box;
     }
 
@@ -288,7 +360,7 @@ public class MainActivity extends Activity {
     }
 
     @Override protected void onUserLeaveHint() {
-        if (customView != null && !isInPictureInPictureMode()) {
+        if (prefs.getBoolean("background_playback", true) && customView != null && !isInPictureInPictureMode()) {
             try {
                 PictureInPictureParams params = new PictureInPictureParams.Builder()
                         .setAspectRatio(new Rational(16, 9))
