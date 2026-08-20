@@ -55,50 +55,58 @@ public class MainActivity extends Activity {
 
         LinearLayout page = new LinearLayout(this);
         page.setOrientation(LinearLayout.VERTICAL);
-        page.setPadding(Ui.dp(this, preview ? 10 : 16), Ui.dp(this, 10), Ui.dp(this, preview ? 10 : 16), Ui.dp(this, 10));
+        page.setPadding(Ui.dp(this, preview ? 8 : 16), Ui.dp(this, 8), Ui.dp(this, preview ? 8 : 16), Ui.dp(this, 8));
         root.addView(page, new FrameLayout.LayoutParams(-1, -1));
 
-        TextView title = Ui.text(this, preview ? "MyCar View AA  •  CAR PREVIEW" : "MyCar View AA", preview ? 20 : 28, Ui.TEXT, true);
-        page.addView(title, new LinearLayout.LayoutParams(-1, Ui.dp(this, preview ? 54 : 64)));
+        TextView title = Ui.text(this, preview ? "MyCar View AA  •  CAR PREVIEW" : "MyCar View AA", preview ? 17 : 28, Ui.TEXT, true);
+        page.addView(title, new LinearLayout.LayoutParams(-1, Ui.dp(this, preview ? 36 : 64)));
 
-        LinearLayout bar = new LinearLayout(this);
-        bar.setGravity(Gravity.CENTER_VERTICAL);
-        page.addView(bar, new LinearLayout.LayoutParams(-1, Ui.dp(this, preview ? 58 : 72)));
+        if (preview) {
+            page.addView(buildVietMapWidget(), new LinearLayout.LayoutParams(-1, Ui.dp(this, 112)));
+        }
 
-        address = new EditText(this);
-        address.setSingleLine(true);
-        address.setText(HOME);
-        address.setTextColor(Ui.TEXT);
-        address.setHintTextColor(Ui.MUTED);
-        address.setTextSize(preview ? 14 : 17);
-        address.setPadding(Ui.dp(this, 16), 0, Ui.dp(this, 16), 0);
-        address.setBackground(Ui.rounded(Ui.PANEL, Ui.STROKE, 22, this));
-        address.setImeOptions(EditorInfo.IME_ACTION_GO);
-        bar.addView(address, new LinearLayout.LayoutParams(0, Ui.dp(this, preview ? 48 : 58), 1));
+        if (!preview) {
+            LinearLayout bar = new LinearLayout(this);
+            bar.setGravity(Gravity.CENTER_VERTICAL);
+            page.addView(bar, new LinearLayout.LayoutParams(-1, Ui.dp(this, 72)));
 
-        TextView go = button("Đi", preview ? 15 : 18, Ui.ACCENT, 0xFF071321);
-        LinearLayout.LayoutParams gp = new LinearLayout.LayoutParams(Ui.dp(this, preview ? 72 : 84), Ui.dp(this, preview ? 48 : 58));
-        gp.setMargins(Ui.dp(this, 10), 0, 0, 0);
-        bar.addView(go, gp);
-        go.setOnClickListener(v -> loadInput());
-        address.setOnEditorActionListener((v, actionId, event) -> {
-            if (actionId == EditorInfo.IME_ACTION_GO || (event != null && event.getKeyCode() == KeyEvent.KEYCODE_ENTER)) {
-                loadInput();
-                return true;
-            }
-            return false;
-        });
+            address = new EditText(this);
+            address.setSingleLine(true);
+            address.setText(HOME);
+            address.setTextColor(Ui.TEXT);
+            address.setHintTextColor(Ui.MUTED);
+            address.setTextSize(17);
+            address.setPadding(Ui.dp(this, 16), 0, Ui.dp(this, 16), 0);
+            address.setBackground(Ui.rounded(Ui.PANEL, Ui.STROKE, 22, this));
+            address.setImeOptions(EditorInfo.IME_ACTION_GO);
+            bar.addView(address, new LinearLayout.LayoutParams(0, Ui.dp(this, 58), 1));
+
+            TextView go = button("Đi", 18, Ui.ACCENT, 0xFF071321);
+            LinearLayout.LayoutParams gp = new LinearLayout.LayoutParams(Ui.dp(this, 84), Ui.dp(this, 58));
+            gp.setMargins(Ui.dp(this, 10), 0, 0, 0);
+            bar.addView(go, gp);
+            go.setOnClickListener(v -> loadInput());
+            address.setOnEditorActionListener((v, actionId, event) -> {
+                if (actionId == EditorInfo.IME_ACTION_GO || (event != null && event.getKeyCode() == KeyEvent.KEYCODE_ENTER)) {
+                    loadInput();
+                    return true;
+                }
+                return false;
+            });
+        }
 
         browserHost = new FrameLayout(this);
-        page.addView(browserHost, new LinearLayout.LayoutParams(-1, 0, 1));
+        LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(-1, 0, 1);
+        if (preview) bp.setMargins(0, Ui.dp(this, 7), 0, 0);
+        page.addView(browserHost, bp);
         web = new WebView(this);
         browserHost.addView(web, new FrameLayout.LayoutParams(-1, -1));
         configureWebView();
 
         LinearLayout tools = new LinearLayout(this);
         tools.setGravity(Gravity.CENTER);
-        LinearLayout.LayoutParams tp = new LinearLayout.LayoutParams(-1, Ui.dp(this, preview ? 62 : 78));
-        tp.setMargins(0, Ui.dp(this, 8), 0, 0);
+        LinearLayout.LayoutParams tp = new LinearLayout.LayoutParams(-1, Ui.dp(this, preview ? 54 : 78));
+        tp.setMargins(0, Ui.dp(this, 7), 0, 0);
         page.addView(tools, tp);
 
         addTool(tools, "←", v -> { if (web.canGoBack()) web.goBack(); });
@@ -108,6 +116,48 @@ public class MainActivity extends Activity {
         addTool(tools, "⚙", v -> startActivity(new Intent(this, SettingsActivity.class)));
 
         setContentView(root);
+    }
+
+    private View buildVietMapWidget() {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(Ui.dp(this, 12), Ui.dp(this, 7), Ui.dp(this, 12), Ui.dp(this, 8));
+        card.setBackground(Ui.rounded(0xFF121A25, 0xFF253548, 18, this));
+
+        LinearLayout header = new LinearLayout(this);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        TextView vmIcon = Ui.text(this, "●", 15, 0xFFFFC928, true);
+        TextView vmTitle = Ui.text(this, "  VIETMAP LIVE", 14, Ui.TEXT, true);
+        header.addView(vmIcon, new LinearLayout.LayoutParams(Ui.dp(this, 20), -1));
+        header.addView(vmTitle, new LinearLayout.LayoutParams(0, -1, 1));
+        card.addView(header, new LinearLayout.LayoutParams(-1, Ui.dp(this, 24)));
+
+        LinearLayout data = new LinearLayout(this);
+        data.setGravity(Gravity.CENTER_VERTICAL);
+        card.addView(data, new LinearLayout.LayoutParams(-1, 0, 1));
+
+        data.addView(speedTile("80", "GIỚI HẠN", true), new LinearLayout.LayoutParams(0, -1, 1));
+        data.addView(speedTile("0", "km/h", false), new LinearLayout.LayoutParams(0, -1, 1));
+        data.addView(speedTile("📷", "269m", true), new LinearLayout.LayoutParams(0, -1, 1));
+        data.addView(speedTile("50", "67m", true), new LinearLayout.LayoutParams(0, -1, 1));
+        return card;
+    }
+
+    private View speedTile(String main, String sub, boolean warning) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setGravity(Gravity.CENTER);
+        box.setPadding(Ui.dp(this, 4), Ui.dp(this, 3), Ui.dp(this, 4), Ui.dp(this, 3));
+
+        TextView primary = Ui.text(this, main, main.length() > 2 ? 20 : 25, Ui.TEXT, true);
+        primary.setGravity(Gravity.CENTER);
+        primary.setBackground(Ui.rounded(0xFF090D12, warning ? 0xFFE43A35 : 0xFF4EA7FF, 30, this));
+        box.addView(primary, new LinearLayout.LayoutParams(Ui.dp(this, 62), Ui.dp(this, 52)));
+
+        TextView secondary = Ui.text(this, sub, 12, Ui.MUTED, false);
+        secondary.setGravity(Gravity.CENTER);
+        box.addView(secondary, new LinearLayout.LayoutParams(-1, Ui.dp(this, 22)));
+        return box;
     }
 
     private TextView button(String label, float sp, int bg, int fg) {
@@ -153,7 +203,7 @@ public class MainActivity extends Activity {
             }
 
             @Override public void onPageStarted(WebView view, String url, Bitmap favicon) {
-                address.setText(url);
+                if (address != null) address.setText(url);
             }
         });
 
@@ -191,6 +241,7 @@ public class MainActivity extends Activity {
     }
 
     private void loadInput() {
+        if (address == null) return;
         String u = address.getText().toString().trim();
         if (u.isEmpty()) return;
         if (!u.startsWith("http://") && !u.startsWith("https://")) {
