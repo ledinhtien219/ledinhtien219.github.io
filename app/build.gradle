@@ -10,8 +10,8 @@ android {
         applicationId 'com.demo.mycarview'
         minSdk 26
         targetSdk 35
-        versionCode 12
-        versionName '0.5.6'
+        versionCode 13
+        versionName '0.6.0'
     }
 
     buildTypes {
@@ -28,4 +28,9 @@ android {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
+}
+
+dependencies {
+    implementation 'androidx.car.app:app:1.7.0'
+    implementation 'androidx.car.app:app-projected:1.7.0'
 }
