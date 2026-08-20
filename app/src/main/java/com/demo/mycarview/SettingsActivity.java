@@ -26,16 +26,54 @@ public class SettingsActivity extends Activity {
     private static final int REQ_LOCATION = 2002;
 
     interface ToggleCallback { void onChanged(boolean enabled); }
+    interface SliderCallback { void onStopped(int value); }
 
     private SharedPreferences prefs;
     private LinearLayout expandedPanel;
     private TextView expandedArrow;
     private TextView micButton;
+    private TextView wazeButton;
+    private Switch bubbleSwitch;
+    private boolean pendingOverlayEnable;
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         build();
+    }
+
+    @Override protected void onResume() {
+        super.onResume();
+        if (prefs == null) return;
+
+        if (pendingOverlayEnable && Settings.canDrawOverlays(this)) {
+            pendingOverlayEnable = false;
+            prefs.edit().putBoolean("bubble_enabled", true).apply();
+            if (bubbleSwitch != null) bubbleSwitch.setChecked(true);
+            startBubble();
+        } else if (prefs.getBoolean("bubble_enabled", false)) {
+            if (Settings.canDrawOverlays(this)) {
+                startBubbleServiceOnly();
+            } else {
+                prefs.edit().putBoolean("bubble_enabled", false).apply();
+                if (bubbleSwitch != null) bubbleSwitch.setChecked(false);
+            }
+        }
+
+        if (micButton != null) {
+            micButton.setText(hasMicPermission()
+                    ? tr("Đã cấp quyền microphone", "Microphone granted")
+                    : tr("Cấp quyền microphone", "Grant microphone"));
+        }
+        if (wazeButton != null) updateWazeButton();
+    }
+
+    private boolean isEnglish() {
+        return "en".equals(prefs.getString("language", "vi"));
+    }
+
+    private String tr(String vi, String en) {
+        return isEnglish() ? en : vi;
     }
 
     private void build() {
@@ -48,27 +86,27 @@ public class SettingsActivity extends Activity {
         root.setPadding(Ui.dp(this, 20), Ui.dp(this, 18), Ui.dp(this, 20), Ui.dp(this, 28));
         scroll.addView(root, new ScrollView.LayoutParams(-1, -2));
 
-        TextView title = Ui.text(this, "Cài đặt CarView AA", 32, Ui.TEXT, true);
+        TextView title = Ui.text(this, tr("Cài đặt CarView AA", "CarView AA Settings"), 32, Ui.TEXT, true);
         LinearLayout.LayoutParams titleParams = new LinearLayout.LayoutParams(-1, -2);
         titleParams.setMargins(0, Ui.dp(this, 4), 0, Ui.dp(this, 24));
         root.addView(title, titleParams);
 
-        LinearLayout language = addSection(root, "NGÔN NGỮ");
+        LinearLayout language = addSection(root, tr("NGÔN NGỮ", "LANGUAGE"));
         buildLanguage(language);
 
-        LinearLayout voice = addSection(root, "GIỌNG NÓI");
+        LinearLayout voice = addSection(root, tr("GIỌNG NÓI", "VOICE"));
         buildVoice(voice);
 
-        LinearLayout video = addSection(root, "PHÁT VIDEO");
+        LinearLayout video = addSection(root, tr("PHÁT VIDEO", "VIDEO PLAYBACK"));
         buildVideo(video);
 
-        LinearLayout carUi = addSection(root, "GIAO DIỆN MÀN HÌNH XE");
+        LinearLayout carUi = addSection(root, tr("GIAO DIỆN MÀN HÌNH XE", "CAR SCREEN UI"));
         buildCarUi(carUi);
 
-        LinearLayout bubble = addSection(root, "BONG BÓNG TỐC ĐỘ");
+        LinearLayout bubble = addSection(root, tr("BONG BÓNG TỐC ĐỘ", "SPEED BUBBLE"));
         buildBubble(bubble);
 
-        TextView back = actionButton("Quay lại", false);
+        TextView back = actionButton(tr("Quay lại", "Back"), false);
         back.setOnClickListener(v -> finish());
         LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(-1, Ui.dp(this, 76));
         bp.setMargins(0, Ui.dp(this, 20), 0, 0);
@@ -129,8 +167,7 @@ public class SettingsActivity extends Activity {
     }
 
     private void buildLanguage(LinearLayout panel) {
-        TextView heading = body("Ngôn ngữ hiển thị", 18, Ui.TEXT, true);
-        panel.addView(heading, rowParams());
+        panel.addView(body(tr("Ngôn ngữ hiển thị", "Display language"), 18, Ui.TEXT, true), rowParams());
 
         RadioGroup group = new RadioGroup(this);
         group.setOrientation(RadioGroup.VERTICAL);
@@ -141,27 +178,35 @@ public class SettingsActivity extends Activity {
         en.setId(View.generateViewId());
         group.addView(vi, radioParams());
         group.addView(en, radioParams());
-        vi.setOnClickListener(v -> prefs.edit().putString("language", "vi").apply());
-        en.setOnClickListener(v -> prefs.edit().putString("language", "en").apply());
+        vi.setOnClickListener(v -> changeLanguage("vi"));
+        en.setOnClickListener(v -> changeLanguage("en"));
         panel.addView(group, rowParams());
+    }
+
+    private void changeLanguage(String language) {
+        if (language.equals(prefs.getString("language", "vi"))) return;
+        prefs.edit().putString("language", language).apply();
+        recreate();
     }
 
     private void buildVoice(LinearLayout panel) {
         addSwitchSetting(panel,
                 "voice_control",
-                "Bật điều khiển giọng nói trên xe",
-                "Cho phép tìm kiếm bằng nút mic hoặc nhấn 2 lần nút quay lại (Previous) trên vô lăng.",
+                tr("Bật điều khiển giọng nói trên xe", "Enable voice control on car screen"),
+                tr("Nút mic sẽ tìm kiếm YouTube bằng giọng nói.", "The microphone button searches YouTube by voice."),
                 true,
                 null);
 
         addSwitchSetting(panel,
                 "voice_auto_play_first",
-                "Tự phát kết quả tìm kiếm đầu tiên",
-                "Sau khi nhận lệnh giọng nói, tự động mở và phát video đầu tiên trong kết quả tìm kiếm.",
+                tr("Tự phát kết quả tìm kiếm đầu tiên", "Auto-play first voice result"),
+                tr("Sau khi nhận lệnh, mở kết quả YouTube đầu tiên thay vì chỉ hiện danh sách.", "After recognition, open the first YouTube result instead of only showing the result list."),
                 true,
                 null);
 
-        micButton = actionButton(hasMicPermission() ? "Đã cấp quyền microphone" : "Cấp quyền microphone", true);
+        micButton = actionButton(hasMicPermission()
+                ? tr("Đã cấp quyền microphone", "Microphone granted")
+                : tr("Cấp quyền microphone", "Grant microphone"), true);
         micButton.setOnClickListener(v -> requestMic());
         LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(-1, Ui.dp(this, 68));
         p.setMargins(0, Ui.dp(this, 10), 0, 0);
@@ -171,15 +216,15 @@ public class SettingsActivity extends Activity {
     private void buildVideo(LinearLayout panel) {
         addSwitchSetting(panel,
                 "auto_resume",
-                "Tự phát nội dung gần nhất khi mở Android Auto",
-                "Khi bật, CarView AA sẽ mở lại nội dung gần nhất. Khi tắt, ứng dụng bắt đầu tại trang chủ YouTube.",
+                tr("Mở lại nội dung gần nhất", "Resume last page"),
+                tr("Khi bật, CarView mở lại URL gần nhất. Khi tắt, luôn bắt đầu tại YouTube.", "When enabled, CarView reopens the last URL. When disabled, it starts at YouTube."),
                 true,
                 null);
 
         addSwitchSetting(panel,
                 "background_playback",
-                "Tiếp tục phát khi chạy nền",
-                "Giữ phiên trình duyệt và dịch vụ phát khi chuyển sang ứng dụng khác.",
+                tr("Tiếp tục phát khi chạy nền", "Keep background session"),
+                tr("Bật dịch vụ nền để giữ phiên trình duyệt. Video fullscreen có thể chuyển sang PiP khi rời app.", "Runs a foreground service to keep the browser session. Fullscreen video may enter PiP when leaving the app."),
                 true,
                 enabled -> {
                     Intent svc = new Intent(this, BrowserKeepAliveService.class);
@@ -188,8 +233,8 @@ public class SettingsActivity extends Activity {
 
         addSwitchSetting(panel,
                 "ad_filter",
-                "Lọc quảng cáo và tracker trong WebView",
-                "Chặn các request quảng cáo/tracker phổ biến. YouTube có thể thay đổi cách phân phối quảng cáo nên không bảo đảm chặn tuyệt đối.",
+                tr("Lọc quảng cáo và tracker trong WebView", "Filter ads and trackers in WebView"),
+                tr("Chặn các host quảng cáo/tracker phổ biến. Không bảo đảm chặn toàn bộ quảng cáo YouTube.", "Blocks common ad/tracker hosts. This does not guarantee all YouTube ads are blocked."),
                 true,
                 null);
     }
@@ -197,39 +242,42 @@ public class SettingsActivity extends Activity {
     private void buildCarUi(LinearLayout panel) {
         addSwitchSetting(panel,
                 "car_auto_fullscreen",
-                "Tự động toàn màn hình video trên xe",
-                "Khi video bắt đầu phát, CarView AA sẽ ưu tiên chế độ toàn màn hình.",
+                tr("Tự động toàn màn hình video trên xe", "Auto fullscreen video on car screen"),
+                tr("Khi video bắt đầu phát trong Car Preview, CarView sẽ yêu cầu fullscreen nếu trang cho phép.", "When video starts in Car Preview, CarView requests fullscreen when the page allows it."),
                 true,
                 null);
 
         addSwitchSetting(panel,
                 "show_web_browser",
-                "Hiển thị nút trình duyệt web / Show Web Browser button",
-                null,
+                tr("Hiển thị nút trình duyệt web", "Show web browser button"),
+                tr("Hiện nút 🌐 ở menu trái để mở/đóng thanh URL.", "Shows a 🌐 button in the left rail to toggle the URL bar."),
                 true,
                 null);
 
-        TextView heading = body("Nút menu bên trái", 17, Ui.ACCENT, true);
+        TextView heading = body(tr("Nút menu bên trái", "Left-side menu buttons"), 17, Ui.ACCENT, true);
         LinearLayout.LayoutParams hp = rowParams();
         hp.setMargins(0, Ui.dp(this, 14), 0, 0);
         panel.addView(heading, hp);
 
-        TextView hint = body("Chọn các nút sẽ hiển thị trong menu bên trái trên màn hình xe.", 15, Ui.MUTED, false);
+        TextView hint = body(tr(
+                "Các công tắc dưới đây thay đổi trực tiếp menu trái trong Car Preview.",
+                "The switches below directly control the left rail in Car Preview."), 15, Ui.MUTED, false);
         panel.addView(hint, rowParams());
 
-        addSlider(panel, "car_icon_scale", "Kích thước biểu tượng", 60, 220, 100,
-                "Kéo để điều chỉnh kích thước. Khi ẩn bớt nút, các nút còn lại có thể dùng nhiều không gian hơn.");
+        addSlider(panel, "car_icon_scale", tr("Kích thước biểu tượng", "Icon size"), 60, 220, 100,
+                tr("Có hiệu lực khi quay lại Car Preview.", "Applies when returning to Car Preview."),
+                null);
 
-        addSwitchSetting(panel, "car_btn_voice", "Hiển thị nút tìm kiếm giọng nói", null, true, null);
-        addSwitchSetting(panel, "car_btn_previous", "Hiển thị nút Previous", null, false, null);
-        addSwitchSetting(panel, "car_btn_play_pause", "Hiển thị nút Play/Pause", null, true, null);
-        addSwitchSetting(panel, "car_btn_next", "Hiển thị nút Next", null, true, null);
-        addSwitchSetting(panel, "car_btn_back", "Hiển thị nút Back", null, true, null);
-        addSwitchSetting(panel, "car_btn_home", "Hiển thị nút Home", null, false, null);
-        addSwitchSetting(panel, "car_btn_refresh", "Hiển thị nút Refresh", null, false, null);
-        addSwitchSetting(panel, "car_btn_aspect", "Hiển thị nút đổi tỉ lệ video", null, true, null);
+        addSwitchSetting(panel, "car_btn_voice", tr("Hiển thị nút tìm kiếm giọng nói", "Show voice search"), null, true, null);
+        addSwitchSetting(panel, "car_btn_previous", tr("Hiển thị nút Previous / tua -10 giây", "Show Previous / seek -10s"), null, false, null);
+        addSwitchSetting(panel, "car_btn_play_pause", tr("Hiển thị nút Play/Pause", "Show Play/Pause"), null, true, null);
+        addSwitchSetting(panel, "car_btn_next", tr("Hiển thị nút Next / tua +10 giây", "Show Next / seek +10s"), null, true, null);
+        addSwitchSetting(panel, "car_btn_back", tr("Hiển thị nút Back", "Show Back"), null, true, null);
+        addSwitchSetting(panel, "car_btn_home", tr("Hiển thị nút Home", "Show Home"), null, false, null);
+        addSwitchSetting(panel, "car_btn_refresh", tr("Hiển thị nút Refresh", "Show Refresh"), null, false, null);
+        addSwitchSetting(panel, "car_btn_aspect", tr("Hiển thị nút đổi tỉ lệ video", "Show video aspect button"), null, true, null);
 
-        TextView preview = actionButton("Xem thử giao diện màn hình xe", true);
+        TextView preview = actionButton(tr("Xem thử giao diện màn hình xe", "Open Car Preview"), true);
         preview.setOnClickListener(v -> {
             Intent i = new Intent(this, MainActivity.class);
             i.putExtra("car_preview", true);
@@ -241,16 +289,22 @@ public class SettingsActivity extends Activity {
     }
 
     private void buildBubble(LinearLayout panel) {
-        addSwitchSetting(panel,
+        bubbleSwitch = addSwitchSetting(panel,
                 "bubble_enabled",
-                "Hiển thị bong bóng tốc độ",
-                "Hiển thị thông tin tốc độ từ nguồn đã chọn trong một bong bóng nổi.",
+                tr("Hiển thị bong bóng tốc độ", "Show speed bubble"),
+                tr("Bong bóng nổi trên ứng dụng điện thoại khác. Car Preview cũng hiển thị bubble riêng trong giao diện xe.", "The phone overlay floats above other phone apps. Car Preview also renders its own bubble inside the car UI."),
                 false,
                 enabled -> {
                     if (enabled) {
                         if (!Settings.canDrawOverlays(this)) {
                             prefs.edit().putBoolean("bubble_enabled", false).apply();
-                            Toast.makeText(this, "Cần cấp quyền Hiển thị trên ứng dụng khác. Sau khi cấp, bật lại công tắc.", Toast.LENGTH_LONG).show();
+                            pendingOverlayEnable = true;
+                            if (bubbleSwitch != null && bubbleSwitch.isChecked()) {
+                                bubbleSwitch.post(() -> bubbleSwitch.setChecked(false));
+                            }
+                            Toast.makeText(this,
+                                    tr("Cấp quyền 'Hiển thị trên ứng dụng khác', rồi quay lại CarView.", "Grant 'Display over other apps', then return to CarView."),
+                                    Toast.LENGTH_LONG).show();
                             Intent i = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
                                     Uri.parse("package:" + getPackageName()));
                             startActivity(i);
@@ -262,7 +316,7 @@ public class SettingsActivity extends Activity {
                     }
                 });
 
-        TextView sourceTitle = body("Nguồn dữ liệu tốc độ", 17, Ui.TEXT, true);
+        TextView sourceTitle = body(tr("Nguồn dữ liệu tốc độ", "Speed data source"), 17, Ui.TEXT, true);
         LinearLayout.LayoutParams st = rowParams();
         st.setMargins(0, Ui.dp(this, 12), 0, Ui.dp(this, 2));
         panel.addView(sourceTitle, st);
@@ -271,7 +325,7 @@ public class SettingsActivity extends Activity {
         sources.setOrientation(RadioGroup.VERTICAL);
         String selected = prefs.getString("speed_source", "vietmap");
         RadioButton vietmap = radio("VIETMAP LIVE", "vietmap".equals(selected));
-        RadioButton waze = radio("Waze (tốc độ GPS)", "waze".equals(selected));
+        RadioButton waze = radio("Waze · GPS", "waze".equals(selected));
         RadioButton wyn = radio("Wyn", "wyn".equals(selected));
         vietmap.setId(View.generateViewId());
         waze.setId(View.generateViewId());
@@ -280,52 +334,62 @@ public class SettingsActivity extends Activity {
         sources.addView(waze, radioParams());
         sources.addView(wyn, radioParams());
 
-        vietmap.setOnClickListener(v -> {
-            prefs.edit().putString("speed_source", "vietmap").apply();
-            restartBubbleIfEnabled();
-        });
+        vietmap.setOnClickListener(v -> changeSpeedSource("vietmap"));
         waze.setOnClickListener(v -> {
-            prefs.edit().putString("speed_source", "waze").apply();
+            changeSpeedSource("waze");
             if (!hasLocationPermission()) requestLocation();
-            else restartBubbleIfEnabled();
         });
-        wyn.setOnClickListener(v -> {
-            prefs.edit().putString("speed_source", "wyn").apply();
-            restartBubbleIfEnabled();
-        });
+        wyn.setOnClickListener(v -> changeSpeedSource("wyn"));
         panel.addView(sources, rowParams());
 
-        addSlider(panel, "bubble_scale", "Kích thước bong bóng", 60, 220, 100,
-                "Điều chỉnh từ 60% đến 220%. Toàn bộ nội dung thay đổi kích thước cùng bong bóng.");
+        addSlider(panel, "bubble_scale", tr("Kích thước bong bóng", "Bubble size"), 60, 220, 100,
+                tr("Thay đổi kích thước overlay ngay sau khi thả thanh trượt.", "Resizes the overlay after releasing the slider."),
+                value -> restartBubbleIfEnabled());
 
         addSwitchSetting(panel,
                 "bubble_hide_button",
-                "Hiển thị nút ẩn/hiện bong bóng tốc độ",
-                null,
+                tr("Hiển thị nút × để tắt bong bóng", "Show × button to hide bubble"),
+                tr("Nút × nằm ở góc bong bóng và tắt overlay ngay lập tức.", "The × button sits on the bubble and immediately turns the overlay off."),
                 false,
-                null);
+                enabled -> restartBubbleIfEnabled());
 
         addSwitchSetting(panel,
                 "bubble_camera_zone",
-                "Hiển thị camera và biển khu dân cư",
-                "VIETMAP có thể dùng phần này ở bản kết nối dữ liệu sau. Waze hiện chỉ dùng tốc độ GPS vì Waze không cấp API public cho speed-limit/camera.",
+                tr("Hiển thị vùng camera / khu dân cư khi nguồn hỗ trợ", "Show camera / residential status when supported"),
+                tr("Hiện tại Waze chỉ dùng tốc độ GPS nên mục này không hiển thị dữ liệu Waze giả.", "Waze currently supplies GPS speed only, so CarView does not fabricate Waze camera data."),
                 true,
-                null);
+                enabled -> restartBubbleIfEnabled());
 
-        TextView note = body("Waze: CarView lấy tốc độ hiện tại từ GPS của điện thoại và mở Waze để dẫn đường. Giới hạn tốc độ/camera của Waze không được đọc trực tiếp.", 15, Ui.MUTED, false);
+        TextView note = body(tr(
+                "Waze: tốc độ hiện tại lấy trực tiếp từ GPS điện thoại. VIETMAP/Wyn hiện mới có nút mở ứng dụng; chưa đọc dữ liệu private của ứng dụng khác.",
+                "Waze: current speed comes directly from phone GPS. VIETMAP/Wyn currently only launch their apps; CarView does not read private app data."), 15, Ui.MUTED, false);
         LinearLayout.LayoutParams np = rowParams();
         np.setMargins(0, Ui.dp(this, 12), 0, Ui.dp(this, 10));
         panel.addView(note, np);
 
-        TextView connectVietmap = actionButton("Kết nối VIETMAP LIVE", true);
+        TextView connectVietmap = actionButton(tr("Mở VIETMAP LIVE", "Open VIETMAP LIVE"), true);
         connectVietmap.setOnClickListener(v -> connectVietmap());
         LinearLayout.LayoutParams vp = new LinearLayout.LayoutParams(-1, Ui.dp(this, 68));
         vp.setMargins(0, 0, 0, Ui.dp(this, 10));
         panel.addView(connectVietmap, vp);
 
-        TextView connectWaze = actionButton(hasLocationPermission() ? "Mở Waze · GPS đã sẵn sàng" : "Kết nối Waze · Cấp quyền GPS", true);
-        connectWaze.setOnClickListener(v -> connectWaze());
-        panel.addView(connectWaze, new LinearLayout.LayoutParams(-1, Ui.dp(this, 68)));
+        wazeButton = actionButton("", true);
+        updateWazeButton();
+        wazeButton.setOnClickListener(v -> connectWaze());
+        panel.addView(wazeButton, new LinearLayout.LayoutParams(-1, Ui.dp(this, 68)));
+    }
+
+    private void updateWazeButton() {
+        if (wazeButton == null) return;
+        wazeButton.setText(hasLocationPermission()
+                ? tr("Mở Waze · GPS sẵn sàng", "Open Waze · GPS ready")
+                : tr("Kết nối Waze · Cấp quyền GPS", "Connect Waze · Grant GPS"));
+    }
+
+    private void changeSpeedSource(String source) {
+        prefs.edit().putString("speed_source", source).apply();
+        if ("waze".equals(source)) prefs.edit().putString("speed", "0").apply();
+        restartBubbleIfEnabled();
     }
 
     private Switch addSwitchSetting(LinearLayout parent,
@@ -376,7 +440,8 @@ public class SettingsActivity extends Activity {
                            int min,
                            int max,
                            int defaultValue,
-                           String description) {
+                           String description,
+                           SliderCallback callback) {
         LinearLayout block = new LinearLayout(this);
         block.setOrientation(LinearLayout.VERTICAL);
         block.setPadding(0, Ui.dp(this, 10), 0, Ui.dp(this, 12));
@@ -405,7 +470,7 @@ public class SettingsActivity extends Activity {
             }
             @Override public void onStartTrackingTouch(SeekBar seekBar) {}
             @Override public void onStopTrackingTouch(SeekBar seekBar) {
-                restartBubbleIfEnabled();
+                if (callback != null) callback.onStopped(min + seekBar.getProgress());
             }
         });
 
@@ -468,7 +533,7 @@ public class SettingsActivity extends Activity {
 
     private void requestMic() {
         if (hasMicPermission()) {
-            Toast.makeText(this, "Microphone đã được cấp quyền.", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, tr("Microphone đã được cấp quyền.", "Microphone permission is already granted."), Toast.LENGTH_SHORT).show();
             return;
         }
         requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, REQ_MIC);
@@ -481,9 +546,12 @@ public class SettingsActivity extends Activity {
     private void requestLocation() {
         if (hasLocationPermission()) {
             restartBubbleIfEnabled();
+            updateWazeButton();
             return;
         }
-        Toast.makeText(this, "Chọn vị trí chính xác để tốc độ GPS cập nhật ổn định.", Toast.LENGTH_LONG).show();
+        Toast.makeText(this,
+                tr("Chọn vị trí chính xác để tốc độ GPS ổn định.", "Choose precise location for reliable GPS speed."),
+                Toast.LENGTH_LONG).show();
         requestPermissions(new String[]{
                 Manifest.permission.ACCESS_COARSE_LOCATION,
                 Manifest.permission.ACCESS_FINE_LOCATION
@@ -492,17 +560,23 @@ public class SettingsActivity extends Activity {
 
     @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode == REQ_MIC && micButton != null) {
-            boolean granted = grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED;
-            micButton.setText(granted ? "Đã cấp quyền microphone" : "Cấp quyền microphone");
+        if (requestCode == REQ_MIC) {
+            if (micButton != null) {
+                micButton.setText(hasMicPermission()
+                        ? tr("Đã cấp quyền microphone", "Microphone granted")
+                        : tr("Cấp quyền microphone", "Grant microphone"));
+            }
             return;
         }
         if (requestCode == REQ_LOCATION) {
+            updateWazeButton();
             if (hasLocationPermission()) {
-                Toast.makeText(this, "GPS đã sẵn sàng cho bong bóng Waze.", Toast.LENGTH_SHORT).show();
+                Toast.makeText(this, tr("GPS đã sẵn sàng cho Waze.", "GPS is ready for Waze."), Toast.LENGTH_SHORT).show();
                 restartBubbleIfEnabled();
             } else {
-                Toast.makeText(this, "Cần quyền vị trí chính xác để hiển thị tốc độ GPS.", Toast.LENGTH_LONG).show();
+                Toast.makeText(this,
+                        tr("Cần quyền vị trí chính xác để hiển thị tốc độ GPS.", "Precise location is required for GPS speed."),
+                        Toast.LENGTH_LONG).show();
             }
         }
     }
@@ -510,17 +584,17 @@ public class SettingsActivity extends Activity {
     private void startBubble() {
         String source = prefs.getString("speed_source", "vietmap");
         if ("waze".equals(source) && !hasLocationPermission()) {
-            prefs.edit().putBoolean("bubble_enabled", true).putString("speed", "0").apply();
             requestLocation();
             return;
         }
-        if ("waze".equals(source)) {
-            prefs.edit().putString("speed", "0").apply();
-        } else if (prefs.getString("speed", null) == null) {
-            prefs.edit().putString("speed", "67").apply();
-        }
+        if ("waze".equals(source)) prefs.edit().putString("speed", "0").apply();
+        startBubbleServiceOnly();
+        Toast.makeText(this, tr("Đã bật bong bóng tốc độ.", "Speed bubble enabled."), Toast.LENGTH_SHORT).show();
+    }
+
+    private void startBubbleServiceOnly() {
+        if (!Settings.canDrawOverlays(this)) return;
         startForegroundService(new Intent(this, SpeedBubbleService.class));
-        Toast.makeText(this, "Đã bật bong bóng tốc độ.", Toast.LENGTH_SHORT).show();
     }
 
     private void restartBubbleIfEnabled() {
@@ -530,8 +604,7 @@ public class SettingsActivity extends Activity {
     }
 
     private void connectVietmap() {
-        prefs.edit().putString("speed_source", "vietmap").apply();
-        restartBubbleIfEnabled();
+        changeSpeedSource("vietmap");
         String[] packages = {"vn.vietmap.live", "vn.vietmap.live.v2"};
         for (String pkg : packages) {
             Intent launch = getPackageManager().getLaunchIntentForPackage(pkg);
@@ -540,29 +613,27 @@ public class SettingsActivity extends Activity {
                 return;
             }
         }
-        try {
-            startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=vn.vietmap.live")));
-        } catch (Exception e) {
-            startActivity(new Intent(Intent.ACTION_VIEW,
-                    Uri.parse("https://play.google.com/store/apps/details?id=vn.vietmap.live")));
-        }
+        openStore("vn.vietmap.live");
     }
 
     private void connectWaze() {
-        prefs.edit().putString("speed_source", "waze").apply();
+        changeSpeedSource("waze");
         if (!hasLocationPermission()) requestLocation();
-        else restartBubbleIfEnabled();
 
         Intent launch = getPackageManager().getLaunchIntentForPackage("com.waze");
         if (launch != null) {
             startActivity(launch);
             return;
         }
+        openStore("com.waze");
+    }
+
+    private void openStore(String pkg) {
         try {
-            startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=com.waze")));
+            startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=" + pkg)));
         } catch (Exception e) {
             startActivity(new Intent(Intent.ACTION_VIEW,
-                    Uri.parse("https://play.google.com/store/apps/details?id=com.waze")));
+                    Uri.parse("https://play.google.com/store/apps/details?id=" + pkg)));
         }
     }
 }
