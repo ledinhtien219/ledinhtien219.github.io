@@ -3,6 +3,8 @@ name: Build CarView Demo APK
 on:
   push:
     branches: [carview-demo]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
