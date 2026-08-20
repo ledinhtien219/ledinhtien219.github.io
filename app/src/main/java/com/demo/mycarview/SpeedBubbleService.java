@@ -27,18 +27,27 @@ import android.widget.TextView;
 
 import java.util.Map;
 
+/**
+ * Draggable road HUD shown as a system overlay on supported phone/head-unit setups.
+ * Layout mirrors the compact VIETMAP-style strip: current limit, GPS speed,
+ * upcoming camera distance, and next limit distance.
+ */
 public class SpeedBubbleService extends Service {
     private static final String PREFS = "carview_settings";
     private static final String CHANNEL_ID = "carview_speed_bubble";
     private static final int NOTIFICATION_ID = 1101;
 
     private WindowManager windowManager;
-    private View bubble;
+    private View hud;
     private WindowManager.LayoutParams params;
     private SharedPreferences prefs;
-    private TextView speedView;
     private TextView sourceView;
-    private TextView limitView;
+    private TextView limitValue;
+    private TextView speedValue;
+    private TextView cameraValue;
+    private TextView cameraDistance;
+    private TextView nextLimitValue;
+    private TextView nextLimitDistance;
     private LocationManager locationManager;
     private LocationListener locationListener;
 
@@ -46,26 +55,22 @@ public class SpeedBubbleService extends Service {
         super.onCreate();
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
 
-        // startForegroundService() must be satisfied quickly. Any failure is handled
-        // here so a rejected overlay/FGS never takes down the whole application.
         if (!startAsForegroundSafely()) {
             stopSelf();
             return;
         }
-
         if (!Settings.canDrawOverlays(this)) {
             setBubbleEnabled(false);
             stopSelf();
             return;
         }
-
-        if (!showBubbleSafely()) {
+        if (!showHudSafely()) {
             setBubbleEnabled(false);
             stopSelf();
             return;
         }
-
-        startSelectedSource();
+        startGpsSpeed();
+        refreshHud();
     }
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
@@ -74,7 +79,7 @@ public class SpeedBubbleService extends Service {
             stopSelf();
             return START_NOT_STICKY;
         }
-        refreshSourceLabel();
+        refreshHud();
         return START_STICKY;
     }
 
@@ -83,7 +88,7 @@ public class SpeedBubbleService extends Service {
             NotificationManager nm = getSystemService(NotificationManager.class);
             if (nm != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 nm.createNotificationChannel(new NotificationChannel(
-                        CHANNEL_ID, "Bong bóng tốc độ", NotificationManager.IMPORTANCE_LOW));
+                        CHANNEL_ID, "CarView Road HUD", NotificationManager.IMPORTANCE_LOW));
             }
 
             Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
@@ -92,20 +97,16 @@ public class SpeedBubbleService extends Service {
 
             Notification notification = builder
                     .setContentTitle("CarView AA")
-                    .setContentText("Bong bóng tốc độ đang hoạt động")
-                    .setSmallIcon(android.R.drawable.ic_media_play)
+                    .setContentText("Road HUD đang hoạt động")
+                    .setSmallIcon(android.R.drawable.ic_menu_mylocation)
                     .setOngoing(true)
                     .build();
 
             if (Build.VERSION.SDK_INT >= 34) {
                 int type = ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE;
-                if ("waze".equals(readString("speed_source", "vietmap")) && hasLocationPermission()) {
-                    type |= ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION;
-                }
+                if (hasLocationPermission()) type |= ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION;
                 startForeground(NOTIFICATION_ID, notification, type);
-            } else if (Build.VERSION.SDK_INT >= 29
-                    && "waze".equals(readString("speed_source", "vietmap"))
-                    && hasLocationPermission()) {
+            } else if (Build.VERSION.SDK_INT >= 29 && hasLocationPermission()) {
                 startForeground(NOTIFICATION_ID, notification,
                         ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION);
             } else {
@@ -117,50 +118,44 @@ public class SpeedBubbleService extends Service {
         }
     }
 
-    private boolean showBubbleSafely() {
+    private boolean showHudSafely() {
         try {
             windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
             if (windowManager == null || !Settings.canDrawOverlays(this)) return false;
 
-            String source = readString("speed_source", "vietmap");
-            String limit = readString("limit", "80");
-            String speed = readString("speed", "0");
             int scale = readInt("bubble_scale", 100);
-            float factor = Math.max(.6f, Math.min(2.2f, scale / 100f));
+            final float factor = Math.max(.60f, Math.min(1.55f, scale / 100f));
             boolean showHideButton = readBoolean("bubble_hide_button", false);
-            boolean showWarnings = readBoolean("bubble_camera_zone", true) && !"waze".equals(source);
 
             FrameLayout wrapper = new FrameLayout(this);
 
-            LinearLayout box = new LinearLayout(this);
-            box.setOrientation(LinearLayout.VERTICAL);
-            box.setGravity(Gravity.CENTER);
-            box.setPadding(Ui.dp(this, 7), Ui.dp(this, 5), Ui.dp(this, 7), Ui.dp(this, 5));
-            box.setBackground(Ui.rounded(0xEC161D27, 0xFFFF5252, 34, this));
-            wrapper.addView(box, new FrameLayout.LayoutParams(-1, -1));
+            LinearLayout outer = new LinearLayout(this);
+            outer.setOrientation(LinearLayout.VERTICAL);
+            outer.setPadding(Ui.dp(this, 8 * factor), Ui.dp(this, 5 * factor),
+                    Ui.dp(this, 8 * factor), Ui.dp(this, 7 * factor));
+            outer.setBackground(Ui.rounded(0xF20D1218, 0xFF27313B, 20, this));
+            wrapper.addView(outer, new FrameLayout.LayoutParams(-1, -1));
 
-            sourceView = Ui.text(this, sourceLabel(), 9 * factor, Ui.MUTED, true);
-            sourceView.setGravity(Gravity.CENTER);
-            box.addView(sourceView, new LinearLayout.LayoutParams(-1, 0, 1));
+            sourceView = Ui.text(this, sourceLabel(), 10 * factor, 0xFFF0F2F4, true);
+            sourceView.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
+            LinearLayout.LayoutParams sourceLp = new LinearLayout.LayoutParams(-1, Ui.dp(this, 26 * factor));
+            outer.addView(sourceView, sourceLp);
 
-            limitView = Ui.text(this, displayLimit(limit), 22 * factor, 0xFFFFFFFF, true);
-            limitView.setGravity(Gravity.CENTER);
-            box.addView(limitView, new LinearLayout.LayoutParams(-1, 0, 2));
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.CENTER);
+            LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(-1, 0, 1);
+            outer.addView(row, rowLp);
 
-            speedView = Ui.text(this, displaySpeed(speed), 11 * factor, Ui.ACCENT, true);
-            speedView.setGravity(Gravity.CENTER);
-            box.addView(speedView, new LinearLayout.LayoutParams(-1, 0, 1));
-
-            if (showWarnings) {
-                TextView warning = Ui.text(this, "CAM --  ·  KDC --", 8 * factor, Ui.MUTED, false);
-                warning.setGravity(Gravity.CENTER);
-                box.addView(warning, new LinearLayout.LayoutParams(-1, 0, 1));
-            }
+            row.addView(buildLimitTile(factor, false), tileParams());
+            row.addView(buildSpeedTile(factor), tileParams());
+            row.addView(buildCameraTile(factor), tileParams());
+            row.addView(buildLimitTile(factor, true), tileParams());
 
             if (showHideButton) {
                 TextView close = Ui.text(this, "×", 15 * factor, 0xFFFFFFFF, true);
                 close.setGravity(Gravity.CENTER);
-                close.setBackground(Ui.rounded(0xCC7E1F26, 0xFFFF5252, 16, this));
+                close.setBackground(Ui.rounded(0xCC7E1F26, 0xFFFF5252, 14, this));
                 close.setOnClickListener(v -> {
                     setBubbleEnabled(false);
                     stopSelf();
@@ -172,8 +167,8 @@ public class SpeedBubbleService extends Service {
                 wrapper.addView(close, cp);
             }
 
-            int width = Ui.dp(this, (showWarnings ? 118 : 90) * factor);
-            int height = Ui.dp(this, (showWarnings ? 100 : 88) * factor);
+            int width = Ui.dp(this, 470 * factor);
+            int height = Ui.dp(this, 118 * factor);
             params = new WindowManager.LayoutParams(
                     width, height,
                     WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
@@ -181,8 +176,8 @@ public class SpeedBubbleService extends Service {
                             WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                     PixelFormat.TRANSLUCENT);
             params.gravity = Gravity.TOP | Gravity.START;
-            params.x = readInt("bubble_x", Ui.dp(this, 22));
-            params.y = readInt("bubble_y", Ui.dp(this, 130));
+            params.x = readInt("bubble_x", Ui.dp(this, 18));
+            params.y = readInt("bubble_y", Ui.dp(this, 64));
 
             wrapper.setOnTouchListener(new View.OnTouchListener() {
                 float downX, downY;
@@ -201,11 +196,10 @@ public class SpeedBubbleService extends Service {
                             params.x = startX + (int) (event.getRawX() - downX);
                             params.y = startY + (int) (event.getRawY() - downY);
                             try {
-                                if (bubble != null && windowManager != null) {
-                                    windowManager.updateViewLayout(bubble, params);
+                                if (hud != null && windowManager != null) {
+                                    windowManager.updateViewLayout(hud, params);
                                 }
                             } catch (Throwable ignored) {
-                                // Overlay may be revoked while dragging. Do not crash.
                             }
                             return true;
                         case MotionEvent.ACTION_UP:
@@ -224,15 +218,135 @@ public class SpeedBubbleService extends Service {
                 }
             });
 
-            // Assign only after addView succeeds, so onDestroy never removes an
-            // unattached view after a permission race.
             windowManager.addView(wrapper, params);
-            bubble = wrapper;
+            hud = wrapper;
             return true;
         } catch (Throwable ignored) {
-            bubble = null;
+            hud = null;
             return false;
         }
+    }
+
+    private LinearLayout.LayoutParams tileParams() {
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, -1, 1f);
+        lp.setMargins(Ui.dp(this, 3), 0, Ui.dp(this, 3), 0);
+        return lp;
+    }
+
+    private View buildLimitTile(float factor, boolean next) {
+        LinearLayout cell = new LinearLayout(this);
+        cell.setOrientation(LinearLayout.VERTICAL);
+        cell.setGravity(Gravity.CENTER);
+
+        TextView value = Ui.text(this, "--", 22 * factor, 0xFF101010, true);
+        value.setGravity(Gravity.CENTER);
+        value.setBackground(Ui.rounded(0xFFF8F8F8, 0xFFFF3030, 44, this));
+        int circle = Ui.dp(this, 58 * factor);
+        cell.addView(value, new LinearLayout.LayoutParams(circle, circle));
+
+        TextView distance = Ui.text(this, next ? "--" : "", 10 * factor, 0xFFE7EAED, false);
+        distance.setGravity(Gravity.CENTER);
+        cell.addView(distance, new LinearLayout.LayoutParams(-1, Ui.dp(this, 20 * factor)));
+
+        if (next) {
+            nextLimitValue = value;
+            nextLimitDistance = distance;
+        } else {
+            limitValue = value;
+        }
+        return cell;
+    }
+
+    private View buildSpeedTile(float factor) {
+        LinearLayout cell = new LinearLayout(this);
+        cell.setOrientation(LinearLayout.VERTICAL);
+        cell.setGravity(Gravity.CENTER);
+
+        LinearLayout circle = new LinearLayout(this);
+        circle.setOrientation(LinearLayout.VERTICAL);
+        circle.setGravity(Gravity.CENTER);
+        circle.setBackground(Ui.rounded(0xFFF8F8F8, 0xFF2B78FF, 44, this));
+
+        speedValue = Ui.text(this, "--", 21 * factor, 0xFF101820, true);
+        speedValue.setGravity(Gravity.CENTER);
+        circle.addView(speedValue, new LinearLayout.LayoutParams(-1, 0, 2));
+        TextView unit = Ui.text(this, "km/h", 9 * factor, 0xFF27313B, false);
+        unit.setGravity(Gravity.CENTER);
+        circle.addView(unit, new LinearLayout.LayoutParams(-1, 0, 1));
+
+        int size = Ui.dp(this, 58 * factor);
+        cell.addView(circle, new LinearLayout.LayoutParams(size, size));
+        cell.addView(Ui.text(this, "", 10 * factor, 0xFFE7EAED, false),
+                new LinearLayout.LayoutParams(-1, Ui.dp(this, 20 * factor)));
+        return cell;
+    }
+
+    private View buildCameraTile(float factor) {
+        LinearLayout cell = new LinearLayout(this);
+        cell.setOrientation(LinearLayout.VERTICAL);
+        cell.setGravity(Gravity.CENTER);
+
+        cameraValue = Ui.text(this, "CAM", 14 * factor, 0xFF111111, true);
+        cameraValue.setGravity(Gravity.CENTER);
+        cameraValue.setBackground(Ui.rounded(0xFFF8F8F8, 0xFFFF3030, 44, this));
+        int circle = Ui.dp(this, 58 * factor);
+        cell.addView(cameraValue, new LinearLayout.LayoutParams(circle, circle));
+
+        cameraDistance = Ui.text(this, "--", 10 * factor, 0xFFE7EAED, false);
+        cameraDistance.setGravity(Gravity.CENTER);
+        cell.addView(cameraDistance, new LinearLayout.LayoutParams(-1, Ui.dp(this, 20 * factor)));
+        return cell;
+    }
+
+    private void refreshHud() {
+        try {
+            String source = readString("speed_source", "vietmap");
+            if (sourceView != null) sourceView.setText(sourceLabel());
+            if (limitValue != null) {
+                limitValue.setText("waze".equals(source) ? "--" : normalizeLimit(readString("limit", "--")));
+            }
+            if (speedValue != null) {
+                speedValue.setText(hasLocationPermission() ? readString("speed", "0") : "--");
+            }
+            if (cameraDistance != null) {
+                int m = "waze".equals(source) ? -1 : readInt("camera_distance_m", -1);
+                cameraDistance.setText(formatDistance(m));
+            }
+            if (nextLimitValue != null) {
+                nextLimitValue.setText("waze".equals(source)
+                        ? "--" : normalizeLimit(readString("next_limit", "--")));
+            }
+            if (nextLimitDistance != null) {
+                int m = "waze".equals(source) ? -1 : readInt("next_limit_distance_m", -1);
+                nextLimitDistance.setText(formatDistance(m));
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private String sourceLabel() {
+        String source = readString("speed_source", "vietmap");
+        if ("waze".equals(source)) return "WAZE · GPS";
+        if ("wyn".equals(source)) return "WYN";
+        return "VIETMAP LIVE";
+    }
+
+    private String normalizeLimit(String value) {
+        try {
+            int n = Integer.parseInt(value.trim());
+            return (n > 0 && n <= 200) ? String.valueOf(n) : "--";
+        } catch (Throwable ignored) {
+            return "--";
+        }
+    }
+
+    private String formatDistance(int meters) {
+        if (meters < 0) return "--";
+        if (meters < 1000) return meters + "m";
+        float km = meters / 1000f;
+        return km < 10f
+                ? String.format(java.util.Locale.US, "%.1fkm", km)
+                : Math.round(km) + "km";
     }
 
     private boolean hasLocationPermission() {
@@ -240,47 +354,8 @@ public class SpeedBubbleService extends Service {
                 || checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED;
     }
 
-    private String sourceLabel() {
-        String source = readString("speed_source", "vietmap");
-        if ("waze".equals(source)) return hasLocationPermission() ? "WAZE · GPS" : "WAZE · CẦN GPS";
-        if ("wyn".equals(source)) return "WYN · CHỜ DỮ LIỆU";
-        return "VIETMAP · CHỜ DỮ LIỆU";
-    }
-
-    private String displayLimit(String savedLimit) {
-        return "waze".equals(readString("speed_source", "vietmap")) ? "--" : savedLimit;
-    }
-
-    private String displaySpeed(String savedSpeed) {
-        if ("waze".equals(readString("speed_source", "vietmap"))) {
-            return savedSpeed + " km/h";
-        }
-        return "-- km/h";
-    }
-
-    private void refreshSourceLabel() {
-        try {
-            if (sourceView != null) sourceView.setText(sourceLabel());
-            if (limitView != null) limitView.setText(displayLimit(readString("limit", "80")));
-            if (speedView != null) speedView.setText(displaySpeed(readString("speed", "0")));
-        } catch (Throwable ignored) {
-        }
-    }
-
-    private void startSelectedSource() {
-        if ("waze".equals(readString("speed_source", "vietmap"))) {
-            startGpsSpeed();
-        } else {
-            refreshSourceLabel();
-        }
-    }
-
     private void startGpsSpeed() {
-        if (!hasLocationPermission()) {
-            if (sourceView != null) sourceView.setText("WAZE · CẦN GPS");
-            return;
-        }
-
+        if (!hasLocationPermission()) return;
         try {
             locationManager = (LocationManager) getSystemService(LOCATION_SERVICE);
             if (locationManager == null) return;
@@ -294,14 +369,12 @@ public class SpeedBubbleService extends Service {
                     kmh = Math.max(0, Math.min(300, kmh));
                     try { prefs.edit().putString("speed", String.valueOf(kmh)).apply(); }
                     catch (Throwable ignored) {}
-                    if (speedView != null) speedView.setText(kmh + " km/h");
-                    if (sourceView != null) sourceView.setText("WAZE · GPS");
+                    if (speedValue != null) speedValue.setText(String.valueOf(kmh));
                 }
 
                 @Override public void onProviderDisabled(String provider) {
-                    if (sourceView != null) sourceView.setText("WAZE · BẬT GPS");
+                    if (speedValue != null) speedValue.setText("--");
                 }
-
                 @Override public void onProviderEnabled(String provider) {}
                 @Override public void onStatusChanged(String provider, int status, Bundle extras) {}
             };
@@ -310,7 +383,6 @@ public class SpeedBubbleService extends Service {
                     LocationManager.GPS_PROVIDER, 1000L, 0f, locationListener);
         } catch (Throwable ignored) {
             locationListener = null;
-            if (sourceView != null) sourceView.setText("WAZE · CẦN GPS");
         }
     }
 
@@ -355,10 +427,10 @@ public class SpeedBubbleService extends Service {
         }
         locationListener = null;
 
-        if (windowManager != null && bubble != null) {
-            try { windowManager.removeView(bubble); }
+        if (windowManager != null && hud != null) {
+            try { windowManager.removeView(hud); }
             catch (Throwable ignored) {}
-            bubble = null;
+            hud = null;
         }
         super.onDestroy();
     }
