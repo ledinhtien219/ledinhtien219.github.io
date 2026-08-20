@@ -17,7 +17,7 @@ public class BrowserKeepAliveService extends Service {
         NotificationManager nm = getSystemService(NotificationManager.class);
         nm.createNotificationChannel(new NotificationChannel(
                 CHANNEL_ID,
-                "CarView background playback",
+                "Phát nền CarView AA",
                 NotificationManager.IMPORTANCE_LOW));
 
         Intent open = new Intent(this, MainActivity.class);
@@ -28,7 +28,7 @@ public class BrowserKeepAliveService extends Service {
                 PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
 
         Notification notification = new Notification.Builder(this, CHANNEL_ID)
-                .setContentTitle("MyCar View")
+                .setContentTitle("CarView AA")
                 .setContentText("Đang giữ phiên phát nền")
                 .setSmallIcon(android.R.drawable.ic_media_play)
                 .setContentIntent(pi)
