@@ -15,6 +15,8 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 
 public class SpeedBubbleService extends Service {
+    private static final String PREFS = "carview_settings";
+
     private WindowManager windowManager;
     private View bubble;
     private WindowManager.LayoutParams params;
@@ -31,7 +33,7 @@ public class SpeedBubbleService extends Service {
         nm.createNotificationChannel(new NotificationChannel(
                 channelId, "Bong bóng tốc độ", NotificationManager.IMPORTANCE_LOW));
         Notification notification = new Notification.Builder(this, channelId)
-                .setContentTitle("MyCar View AA")
+                .setContentTitle("CarView AA")
                 .setContentText("Bong bóng tốc độ đang hoạt động")
                 .setSmallIcon(android.R.drawable.ic_media_play)
                 .build();
@@ -40,9 +42,9 @@ public class SpeedBubbleService extends Service {
 
     private void showBubble() {
         windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
-        String limit = getSharedPreferences("carview", MODE_PRIVATE).getString("limit", "80");
-        String speed = getSharedPreferences("carview", MODE_PRIVATE).getString("speed", "0");
-        int scale = getSharedPreferences("carview", MODE_PRIVATE).getInt("bubble_scale", 100);
+        String limit = getSharedPreferences(PREFS, MODE_PRIVATE).getString("limit", "80");
+        String speed = getSharedPreferences(PREFS, MODE_PRIVATE).getString("speed", "0");
+        int scale = getSharedPreferences(PREFS, MODE_PRIVATE).getInt("bubble_scale", 100);
         float factor = Math.max(.6f, Math.min(2.2f, scale / 100f));
 
         LinearLayout box = new LinearLayout(this);
@@ -67,8 +69,8 @@ public class SpeedBubbleService extends Service {
                         WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                 PixelFormat.TRANSLUCENT);
         params.gravity = Gravity.TOP | Gravity.START;
-        params.x = getSharedPreferences("carview", MODE_PRIVATE).getInt("bubble_x", Ui.dp(this, 22));
-        params.y = getSharedPreferences("carview", MODE_PRIVATE).getInt("bubble_y", Ui.dp(this, 130));
+        params.x = getSharedPreferences(PREFS, MODE_PRIVATE).getInt("bubble_x", Ui.dp(this, 22));
+        params.y = getSharedPreferences(PREFS, MODE_PRIVATE).getInt("bubble_y", Ui.dp(this, 130));
 
         box.setOnTouchListener(new View.OnTouchListener() {
             float downX, downY;
@@ -88,7 +90,7 @@ public class SpeedBubbleService extends Service {
                         if (bubble != null) windowManager.updateViewLayout(bubble, params);
                         return true;
                     case MotionEvent.ACTION_UP:
-                        getSharedPreferences("carview", MODE_PRIVATE).edit()
+                        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
                                 .putInt("bubble_x", params.x)
                                 .putInt("bubble_y", params.y)
                                 .apply();
