@@ -1,21 +1,19 @@
 package com.demo.mycarview;
 
-import android.Manifest;
-import android.content.pm.PackageManager;
-
 import androidx.annotation.NonNull;
 import androidx.car.app.CarContext;
 import androidx.car.app.Screen;
+import androidx.car.app.model.Action;
+import androidx.car.app.model.MessageTemplate;
 import androidx.car.app.model.Template;
-import androidx.car.app.model.PlaceListMapTemplate;
 
 /**
- * CarView Drive now delegates the map to the Android Auto host.
+ * Crash-safe Android Auto entry screen for CarHUD.
  *
- * This removes the old fake app-owned road surface. The host renders the actual
- * map and current-location layer, while the separate SpeedBubbleService remains
- * responsible for the draggable speed overlay on devices/setups where the phone
- * overlay is visible over the projected UI.
+ * The previous PlaceListMapTemplate was built without a required item list on
+ * some Android Auto hosts, which causes the host to reject the template and show
+ * "app encountered an unexpected error". The actual HUD is provided by the
+ * overlay service; this screen is deliberately minimal and valid on old/new hosts.
  */
 public class CarViewCarScreen extends Screen {
 
@@ -26,15 +24,10 @@ public class CarViewCarScreen extends Screen {
     @NonNull
     @Override
     public Template onGetTemplate() {
-        boolean hasLocation = getCarContext().checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)
-                == PackageManager.PERMISSION_GRANTED
-                || getCarContext().checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION)
-                == PackageManager.PERMISSION_GRANTED;
-
-        // With no title/header/list, Android Auto gives almost the whole screen to
-        // its host-rendered map. Current location is shown whenever permission is available.
-        return new PlaceListMapTemplate.Builder()
-                .setCurrentLocationEnabled(hasLocation)
+        return new MessageTemplate.Builder(
+                "CarHUD đang hoạt động. Mở Google Maps, Waze hoặc VIETMAP LIVE để dùng HUD nổi.")
+                .setTitle("CarHUD")
+                .setHeaderAction(Action.APP_ICON)
                 .build();
     }
 }
