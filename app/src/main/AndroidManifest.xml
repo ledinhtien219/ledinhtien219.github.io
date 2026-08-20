@@ -11,8 +11,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
-    <!-- Android for Cars App Library: map-based templated app. -->
-    <uses-permission android:name="androidx.car.app.MAP_TEMPLATES" />
+    <!-- Android for Cars: app-owned navigation surface with a compact HUD only. -->
+    <uses-permission android:name="androidx.car.app.NAVIGATION_TEMPLATES" />
     <uses-permission android:name="androidx.car.app.ACCESS_SURFACE" />
 
     <queries>
@@ -52,7 +52,7 @@
             </intent-filter>
         </activity>
 
-        <!-- Android Auto entry point. The host renders the template chrome; the app owns the map surface. -->
+        <!-- Android Auto entry point. NavigationTemplate keeps the surface unobstructed. -->
         <service
             android:name=".CarViewCarAppService"
             android:label="CarView Drive"
@@ -60,7 +60,7 @@
             android:exported="true">
             <intent-filter>
                 <action android:name="androidx.car.app.CarAppService" />
-                <category android:name="androidx.car.app.category.POI" />
+                <category android:name="androidx.car.app.category.NAVIGATION" />
             </intent-filter>
         </service>
 
