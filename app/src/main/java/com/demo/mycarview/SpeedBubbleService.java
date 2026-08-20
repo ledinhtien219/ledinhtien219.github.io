@@ -18,6 +18,7 @@ import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
+import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
@@ -63,33 +64,61 @@ public class SpeedBubbleService extends Service {
 
     private void showBubble() {
         windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
+        String source = prefs.getString("speed_source", "vietmap");
         String limit = prefs.getString("limit", "80");
         String speed = prefs.getString("speed", "0");
         int scale = prefs.getInt("bubble_scale", 100);
         float factor = Math.max(.6f, Math.min(2.2f, scale / 100f));
+        boolean showHideButton = prefs.getBoolean("bubble_hide_button", false);
+        boolean showWarnings = prefs.getBoolean("bubble_camera_zone", true) && !"waze".equals(source);
+
+        FrameLayout wrapper = new FrameLayout(this);
 
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
         box.setGravity(Gravity.CENTER);
-        box.setPadding(Ui.dp(this, 6), Ui.dp(this, 6), Ui.dp(this, 6), Ui.dp(this, 6));
-        box.setBackground(Ui.rounded(0xEC161D27, 0xFFFF5252, 40, this));
+        box.setPadding(Ui.dp(this, 7), Ui.dp(this, 5), Ui.dp(this, 7), Ui.dp(this, 5));
+        box.setBackground(Ui.rounded(0xEC161D27, 0xFFFF5252, 34, this));
+        wrapper.addView(box, new FrameLayout.LayoutParams(-1, -1));
 
-        sourceView = Ui.text(this, sourceLabel(), 10 * factor, Ui.MUTED, true);
+        sourceView = Ui.text(this, sourceLabel(), 9 * factor, Ui.MUTED, true);
         sourceView.setGravity(Gravity.CENTER);
         box.addView(sourceView, new LinearLayout.LayoutParams(-1, 0, 1));
 
-        limitView = Ui.text(this, displayLimit(limit), 23 * factor, 0xFFFFFFFF, true);
+        limitView = Ui.text(this, displayLimit(limit), 22 * factor, 0xFFFFFFFF, true);
         limitView.setGravity(Gravity.CENTER);
         box.addView(limitView, new LinearLayout.LayoutParams(-1, 0, 2));
 
-        speedView = Ui.text(this, speed + " km/h", 12 * factor, Ui.ACCENT, true);
+        speedView = Ui.text(this, displaySpeed(speed), 11 * factor, Ui.ACCENT, true);
         speedView.setGravity(Gravity.CENTER);
         box.addView(speedView, new LinearLayout.LayoutParams(-1, 0, 1));
-        bubble = box;
 
-        int size = Ui.dp(this, 86 * factor);
+        if (showWarnings) {
+            TextView warning = Ui.text(this, "CAM --  ·  KDC --", 8 * factor, Ui.MUTED, false);
+            warning.setGravity(Gravity.CENTER);
+            box.addView(warning, new LinearLayout.LayoutParams(-1, 0, 1));
+        }
+
+        if (showHideButton) {
+            TextView close = Ui.text(this, "×", 15 * factor, 0xFFFFFFFF, true);
+            close.setGravity(Gravity.CENTER);
+            close.setBackground(Ui.rounded(0xCC7E1F26, 0xFFFF5252, 16, this));
+            close.setOnClickListener(v -> {
+                prefs.edit().putBoolean("bubble_enabled", false).apply();
+                stopSelf();
+            });
+            int closeSize = Ui.dp(this, 24 * factor);
+            FrameLayout.LayoutParams cp = new FrameLayout.LayoutParams(closeSize, closeSize, Gravity.TOP | Gravity.END);
+            cp.setMargins(0, Ui.dp(this, -3), Ui.dp(this, -3), 0);
+            wrapper.addView(close, cp);
+        }
+
+        bubble = wrapper;
+
+        int width = Ui.dp(this, (showWarnings ? 118 : 90) * factor);
+        int height = Ui.dp(this, (showWarnings ? 100 : 88) * factor);
         params = new WindowManager.LayoutParams(
-                size, size,
+                width, height,
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE |
                         WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
@@ -98,21 +127,28 @@ public class SpeedBubbleService extends Service {
         params.x = prefs.getInt("bubble_x", Ui.dp(this, 22));
         params.y = prefs.getInt("bubble_y", Ui.dp(this, 130));
 
-        box.setOnTouchListener(new View.OnTouchListener() {
+        wrapper.setOnTouchListener(new View.OnTouchListener() {
             float downX, downY;
             int startX, startY;
+            boolean moved;
 
             @Override public boolean onTouch(View v, MotionEvent event) {
-                switch (event.getAction()) {
+                switch (event.getActionMasked()) {
                     case MotionEvent.ACTION_DOWN:
                         downX = event.getRawX();
                         downY = event.getRawY();
                         startX = params.x;
                         startY = params.y;
+                        moved = false;
                         return true;
                     case MotionEvent.ACTION_MOVE:
-                        params.x = startX + (int) (event.getRawX() - downX);
-                        params.y = startY + (int) (event.getRawY() - downY);
+                        int dx = (int) (event.getRawX() - downX);
+                        int dy = (int) (event.getRawY() - downY);
+                        if (Math.abs(dx) > Ui.dp(SpeedBubbleService.this, 3) || Math.abs(dy) > Ui.dp(SpeedBubbleService.this, 3)) {
+                            moved = true;
+                        }
+                        params.x = startX + dx;
+                        params.y = startY + dy;
                         if (bubble != null) windowManager.updateViewLayout(bubble, params);
                         return true;
                     case MotionEvent.ACTION_UP:
@@ -134,17 +170,25 @@ public class SpeedBubbleService extends Service {
     private String sourceLabel() {
         String source = prefs.getString("speed_source", "vietmap");
         if ("waze".equals(source)) return "WAZE · GPS";
-        if ("wyn".equals(source)) return "WYN";
-        return "VIETMAP LIVE";
+        if ("wyn".equals(source)) return "WYN · CHỜ DỮ LIỆU";
+        return "VIETMAP · CHỜ DỮ LIỆU";
     }
 
     private String displayLimit(String savedLimit) {
         return "waze".equals(prefs.getString("speed_source", "vietmap")) ? "--" : savedLimit;
     }
 
+    private String displaySpeed(String savedSpeed) {
+        if ("waze".equals(prefs.getString("speed_source", "vietmap"))) {
+            return savedSpeed + " km/h";
+        }
+        return "-- km/h";
+    }
+
     private void refreshSourceLabel() {
         if (sourceView != null) sourceView.setText(sourceLabel());
         if (limitView != null) limitView.setText(displayLimit(prefs.getString("limit", "80")));
+        if (speedView != null) speedView.setText(displaySpeed(prefs.getString("speed", "0")));
     }
 
     private void startSelectedSource() {
@@ -198,7 +242,10 @@ public class SpeedBubbleService extends Service {
             }
         }
         if (windowManager != null && bubble != null) {
-            windowManager.removeView(bubble);
+            try {
+                windowManager.removeView(bubble);
+            } catch (Throwable ignored) {
+            }
             bubble = null;
         }
         super.onDestroy();
