@@ -23,6 +23,7 @@ import android.widget.Toast;
 public class SettingsActivity extends Activity {
     private static final String PREFS = "carview_settings";
     private static final int REQ_MIC = 2001;
+    private static final int REQ_LOCATION = 2002;
 
     interface ToggleCallback { void onChanged(boolean enabled); }
 
@@ -270,7 +271,7 @@ public class SettingsActivity extends Activity {
         sources.setOrientation(RadioGroup.VERTICAL);
         String selected = prefs.getString("speed_source", "vietmap");
         RadioButton vietmap = radio("VIETMAP LIVE", "vietmap".equals(selected));
-        RadioButton waze = radio("Waze", "waze".equals(selected));
+        RadioButton waze = radio("Waze (tốc độ GPS)", "waze".equals(selected));
         RadioButton wyn = radio("Wyn", "wyn".equals(selected));
         vietmap.setId(View.generateViewId());
         waze.setId(View.generateViewId());
@@ -278,9 +279,20 @@ public class SettingsActivity extends Activity {
         sources.addView(vietmap, radioParams());
         sources.addView(waze, radioParams());
         sources.addView(wyn, radioParams());
-        vietmap.setOnClickListener(v -> prefs.edit().putString("speed_source", "vietmap").apply());
-        waze.setOnClickListener(v -> prefs.edit().putString("speed_source", "waze").apply());
-        wyn.setOnClickListener(v -> prefs.edit().putString("speed_source", "wyn").apply());
+
+        vietmap.setOnClickListener(v -> {
+            prefs.edit().putString("speed_source", "vietmap").apply();
+            restartBubbleIfEnabled();
+        });
+        waze.setOnClickListener(v -> {
+            prefs.edit().putString("speed_source", "waze").apply();
+            if (!hasLocationPermission()) requestLocation();
+            else restartBubbleIfEnabled();
+        });
+        wyn.setOnClickListener(v -> {
+            prefs.edit().putString("speed_source", "wyn").apply();
+            restartBubbleIfEnabled();
+        });
         panel.addView(sources, rowParams());
 
         addSlider(panel, "bubble_scale", "Kích thước bong bóng", 60, 220, 100,
@@ -296,18 +308,24 @@ public class SettingsActivity extends Activity {
         addSwitchSetting(panel,
                 "bubble_camera_zone",
                 "Hiển thị camera và biển khu dân cư",
-                "Mở rộng bong bóng để hiển thị cảnh báo camera cùng biển vào/hết khu dân cư.",
+                "VIETMAP có thể dùng phần này ở bản kết nối dữ liệu sau. Waze hiện chỉ dùng tốc độ GPS vì Waze không cấp API public cho speed-limit/camera.",
                 true,
                 null);
 
-        TextView note = body("Liên kết hoặc mở VIETMAP LIVE trên điện thoại. Phần đọc dữ liệu widget sẽ được nối ở bản nâng cấp sau.", 15, Ui.MUTED, false);
+        TextView note = body("Waze: CarView lấy tốc độ hiện tại từ GPS của điện thoại và mở Waze để dẫn đường. Giới hạn tốc độ/camera của Waze không được đọc trực tiếp.", 15, Ui.MUTED, false);
         LinearLayout.LayoutParams np = rowParams();
         np.setMargins(0, Ui.dp(this, 12), 0, Ui.dp(this, 10));
         panel.addView(note, np);
 
-        TextView connect = actionButton("Kết nối VIETMAP LIVE", true);
-        connect.setOnClickListener(v -> connectVietmap());
-        panel.addView(connect, new LinearLayout.LayoutParams(-1, Ui.dp(this, 68)));
+        TextView connectVietmap = actionButton("Kết nối VIETMAP LIVE", true);
+        connectVietmap.setOnClickListener(v -> connectVietmap());
+        LinearLayout.LayoutParams vp = new LinearLayout.LayoutParams(-1, Ui.dp(this, 68));
+        vp.setMargins(0, 0, 0, Ui.dp(this, 10));
+        panel.addView(connectVietmap, vp);
+
+        TextView connectWaze = actionButton(hasLocationPermission() ? "Mở Waze · GPS đã sẵn sàng" : "Kết nối Waze · Cấp quyền GPS", true);
+        connectWaze.setOnClickListener(v -> connectWaze());
+        panel.addView(connectWaze, new LinearLayout.LayoutParams(-1, Ui.dp(this, 68)));
     }
 
     private Switch addSwitchSetting(LinearLayout parent,
@@ -386,7 +404,9 @@ public class SettingsActivity extends Activity {
                 prefs.edit().putInt(key, actual).apply();
             }
             @Override public void onStartTrackingTouch(SeekBar seekBar) {}
-            @Override public void onStopTrackingTouch(SeekBar seekBar) {}
+            @Override public void onStopTrackingTouch(SeekBar seekBar) {
+                restartBubbleIfEnabled();
+            }
         });
 
         parent.addView(block, new LinearLayout.LayoutParams(-1, -2));
@@ -454,26 +474,68 @@ public class SettingsActivity extends Activity {
         requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, REQ_MIC);
     }
 
+    private boolean hasLocationPermission() {
+        return checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private void requestLocation() {
+        if (hasLocationPermission()) {
+            restartBubbleIfEnabled();
+            return;
+        }
+        Toast.makeText(this, "Chọn vị trí chính xác để tốc độ GPS cập nhật ổn định.", Toast.LENGTH_LONG).show();
+        requestPermissions(new String[]{
+                Manifest.permission.ACCESS_COARSE_LOCATION,
+                Manifest.permission.ACCESS_FINE_LOCATION
+        }, REQ_LOCATION);
+    }
+
     @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode == REQ_MIC && micButton != null) {
             boolean granted = grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED;
             micButton.setText(granted ? "Đã cấp quyền microphone" : "Cấp quyền microphone");
+            return;
+        }
+        if (requestCode == REQ_LOCATION) {
+            if (hasLocationPermission()) {
+                Toast.makeText(this, "GPS đã sẵn sàng cho bong bóng Waze.", Toast.LENGTH_SHORT).show();
+                restartBubbleIfEnabled();
+            } else {
+                Toast.makeText(this, "Cần quyền vị trí chính xác để hiển thị tốc độ GPS.", Toast.LENGTH_LONG).show();
+            }
         }
     }
 
     private void startBubble() {
-        prefs.edit().putString("limit", "80").putString("speed", "67").apply();
+        String source = prefs.getString("speed_source", "vietmap");
+        if ("waze".equals(source) && !hasLocationPermission()) {
+            prefs.edit().putBoolean("bubble_enabled", true).putString("speed", "0").apply();
+            requestLocation();
+            return;
+        }
+        if ("waze".equals(source)) {
+            prefs.edit().putString("speed", "0").apply();
+        } else if (prefs.getString("speed", null) == null) {
+            prefs.edit().putString("speed", "67").apply();
+        }
         startForegroundService(new Intent(this, SpeedBubbleService.class));
         Toast.makeText(this, "Đã bật bong bóng tốc độ.", Toast.LENGTH_SHORT).show();
     }
 
+    private void restartBubbleIfEnabled() {
+        if (!prefs.getBoolean("bubble_enabled", false) || !Settings.canDrawOverlays(this)) return;
+        stopService(new Intent(this, SpeedBubbleService.class));
+        startBubble();
+    }
+
     private void connectVietmap() {
+        prefs.edit().putString("speed_source", "vietmap").apply();
+        restartBubbleIfEnabled();
         String[] packages = {"vn.vietmap.live", "vn.vietmap.live.v2"};
         for (String pkg : packages) {
             Intent launch = getPackageManager().getLaunchIntentForPackage(pkg);
             if (launch != null) {
-                prefs.edit().putString("speed_source", "vietmap").apply();
                 startActivity(launch);
                 return;
             }
@@ -483,6 +545,24 @@ public class SettingsActivity extends Activity {
         } catch (Exception e) {
             startActivity(new Intent(Intent.ACTION_VIEW,
                     Uri.parse("https://play.google.com/store/apps/details?id=vn.vietmap.live")));
+        }
+    }
+
+    private void connectWaze() {
+        prefs.edit().putString("speed_source", "waze").apply();
+        if (!hasLocationPermission()) requestLocation();
+        else restartBubbleIfEnabled();
+
+        Intent launch = getPackageManager().getLaunchIntentForPackage("com.waze");
+        if (launch != null) {
+            startActivity(launch);
+            return;
+        }
+        try {
+            startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=com.waze")));
+        } catch (Exception e) {
+            startActivity(new Intent(Intent.ACTION_VIEW,
+                    Uri.parse("https://play.google.com/store/apps/details?id=com.waze")));
         }
     }
 }
