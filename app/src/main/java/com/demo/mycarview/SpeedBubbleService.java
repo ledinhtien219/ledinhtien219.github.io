@@ -26,13 +26,13 @@ public class SpeedBubbleService extends Service {
     }
 
     private void startAsForeground() {
-        String channelId = "carview_bubble_demo";
+        String channelId = "carview_speed_bubble";
         NotificationManager nm = getSystemService(NotificationManager.class);
         nm.createNotificationChannel(new NotificationChannel(
-                channelId, "CarView speed bubble", NotificationManager.IMPORTANCE_LOW));
+                channelId, "Bong bóng tốc độ", NotificationManager.IMPORTANCE_LOW));
         Notification notification = new Notification.Builder(this, channelId)
-                .setContentTitle("MyCar View Demo")
-                .setContentText("Bong bóng tốc độ demo đang bật")
+                .setContentTitle("MyCar View AA")
+                .setContentText("Bong bóng tốc độ đang hoạt động")
                 .setSmallIcon(android.R.drawable.ic_media_play)
                 .build();
         startForeground(1101, notification);
@@ -40,8 +40,10 @@ public class SpeedBubbleService extends Service {
 
     private void showBubble() {
         windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
-        String limit = getSharedPreferences("demo", MODE_PRIVATE).getString("limit", "80");
-        String speed = getSharedPreferences("demo", MODE_PRIVATE).getString("speed", "67");
+        String limit = getSharedPreferences("carview", MODE_PRIVATE).getString("limit", "80");
+        String speed = getSharedPreferences("carview", MODE_PRIVATE).getString("speed", "0");
+        int scale = getSharedPreferences("carview", MODE_PRIVATE).getInt("bubble_scale", 100);
+        float factor = Math.max(.6f, Math.min(2.2f, scale / 100f));
 
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
@@ -49,23 +51,24 @@ public class SpeedBubbleService extends Service {
         box.setPadding(Ui.dp(this, 6), Ui.dp(this, 6), Ui.dp(this, 6), Ui.dp(this, 6));
         box.setBackground(Ui.rounded(0xEC161D27, 0xFFFF5252, 40, this));
 
-        TextView limitView = Ui.text(this, limit, 24, 0xFFFFFFFF, true);
+        TextView limitView = Ui.text(this, limit, 24 * factor, 0xFFFFFFFF, true);
         limitView.setGravity(Gravity.CENTER);
-        TextView speedView = Ui.text(this, speed, 14, Ui.ACCENT, true);
+        TextView speedView = Ui.text(this, speed + " km/h", 12 * factor, Ui.ACCENT, true);
         speedView.setGravity(Gravity.CENTER);
         box.addView(limitView, new LinearLayout.LayoutParams(-1, 0, 2));
         box.addView(speedView, new LinearLayout.LayoutParams(-1, 0, 1));
         bubble = box;
 
+        int size = Ui.dp(this, 78 * factor);
         params = new WindowManager.LayoutParams(
-                Ui.dp(this, 78), Ui.dp(this, 78),
+                size, size,
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE |
                         WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                 PixelFormat.TRANSLUCENT);
         params.gravity = Gravity.TOP | Gravity.START;
-        params.x = Ui.dp(this, 22);
-        params.y = Ui.dp(this, 130);
+        params.x = getSharedPreferences("carview", MODE_PRIVATE).getInt("bubble_x", Ui.dp(this, 22));
+        params.y = getSharedPreferences("carview", MODE_PRIVATE).getInt("bubble_y", Ui.dp(this, 130));
 
         box.setOnTouchListener(new View.OnTouchListener() {
             float downX, downY;
@@ -83,6 +86,12 @@ public class SpeedBubbleService extends Service {
                         params.x = startX + (int) (event.getRawX() - downX);
                         params.y = startY + (int) (event.getRawY() - downY);
                         if (bubble != null) windowManager.updateViewLayout(bubble, params);
+                        return true;
+                    case MotionEvent.ACTION_UP:
+                        getSharedPreferences("carview", MODE_PRIVATE).edit()
+                                .putInt("bubble_x", params.x)
+                                .putInt("bubble_y", params.y)
+                                .apply();
                         return true;
                     default:
                         return true;
