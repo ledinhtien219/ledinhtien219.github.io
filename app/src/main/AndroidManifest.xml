@@ -11,8 +11,6 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
-    <uses-permission android:name="androidx.car.app.MAP_TEMPLATES" />
-
     <queries>
         <package android:name="vn.vietmap.live" />
         <package android:name="vn.vietmap.live.v2" />
@@ -26,13 +24,6 @@
         android:label="CarHUD"
         android:theme="@android:style/Theme.Material.NoActionBar"
         android:usesCleartextTraffic="false">
-
-        <meta-data
-            android:name="com.google.android.gms.car.application"
-            android:resource="@xml/automotive_app_desc" />
-        <meta-data
-            android:name="androidx.car.app.minCarApiLevel"
-            android:value="1" />
 
         <activity
             android:name=".SettingsActivity"
@@ -50,17 +41,8 @@
             </intent-filter>
         </activity>
 
-        <service
-            android:name=".CarViewCarAppService"
-            android:label="CarHUD"
-            android:icon="@android:drawable/ic_menu_mapmode"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="androidx.car.app.CarAppService" />
-                <category android:name="androidx.car.app.category.POI" />
-            </intent-filter>
-        </service>
-
+        <!-- CarHUD no longer registers a CarAppService. The product is now the
+             overlay itself, shown above Maps/Waze/VIETMAP on compatible setups. -->
         <service
             android:name=".BrowserKeepAliveService"
             android:exported="false"
