@@ -25,6 +25,10 @@
         android:theme="@android:style/Theme.Material.NoActionBar"
         android:usesCleartextTraffic="false">
 
+        <meta-data
+            android:name="com.google.android.gms.car.application"
+            android:resource="@xml/automotive_app_desc" />
+
         <activity
             android:name=".SettingsActivity"
             android:screenOrientation="portrait"
@@ -40,6 +44,15 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <service
+            android:name=".CarMediaBrowserService"
+            android:label="CarView AA"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.media.browse.MediaBrowserService" />
+            </intent-filter>
+        </service>
 
         <service
             android:name=".BrowserKeepAliveService"
