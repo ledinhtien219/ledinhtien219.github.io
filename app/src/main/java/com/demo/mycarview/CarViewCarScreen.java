@@ -10,19 +10,19 @@ import androidx.annotation.NonNull;
 import androidx.car.app.CarContext;
 import androidx.car.app.Screen;
 import androidx.car.app.model.Action;
-import androidx.car.app.model.GridItem;
-import androidx.car.app.model.GridTemplate;
-import androidx.car.app.model.ItemList;
+import androidx.car.app.model.Pane;
+import androidx.car.app.model.PaneTemplate;
+import androidx.car.app.model.Row;
 import androidx.car.app.model.Template;
 import androidx.lifecycle.Lifecycle;
 import androidx.lifecycle.LifecycleEventObserver;
 
 /**
- * Compact Android Auto dashboard for CarHUD.
+ * Conservative Android Auto HUD screen.
  *
- * Android Auto owns the actual template rendering, so this deliberately uses a
- * GridTemplate rather than a system overlay. It keeps the useful VIETMAP-style
- * 4-cell information layout inside CarHUD's own Android Auto screen.
+ * Uses PaneTemplate because some Android Auto hosts reject GridTemplate for POI
+ * apps and show a generic "unexpected error" screen. PaneTemplate is broadly
+ * supported and keeps the four HUD values visible without a map surface.
  */
 public class CarViewCarScreen extends Screen {
     private static final String PREFS = "carview_settings";
@@ -33,7 +33,7 @@ public class CarViewCarScreen extends Screen {
         @Override public void run() {
             if (!updating) return;
             try { invalidate(); } catch (Throwable ignored) {}
-            handler.postDelayed(this, 1000L);
+            handler.postDelayed(this, 2000L);
         }
     };
 
@@ -43,7 +43,7 @@ public class CarViewCarScreen extends Screen {
             if (event == Lifecycle.Event.ON_START) {
                 updating = true;
                 handler.removeCallbacks(refresh);
-                handler.post(refresh);
+                handler.postDelayed(refresh, 500L);
             } else if (event == Lifecycle.Event.ON_STOP || event == Lifecycle.Event.ON_DESTROY) {
                 updating = false;
                 handler.removeCallbacks(refresh);
@@ -67,27 +67,27 @@ public class CarViewCarScreen extends Screen {
                 || getCarContext().checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION)
                 == PackageManager.PERMISSION_GRANTED;
 
-        ItemList list = new ItemList.Builder()
-                .addItem(tile(hasLocation ? speed : "--", "km/h", "TỐC ĐỘ"))
-                .addItem(tile(limit, "km/h", "GIỚI HẠN"))
-                .addItem(tile(nextLimit, formatDistance(nextDistance), "GIỚI HẠN KẾ"))
-                .addItem(tile("CAM", formatDistance(camera), "CAMERA"))
-                .build();
+        Pane.Builder pane = new Pane.Builder();
+        pane.addRow(new Row.Builder()
+                .setTitle((hasLocation ? speed : "--") + " km/h")
+                .addText("Tốc độ hiện tại")
+                .build());
+        pane.addRow(new Row.Builder()
+                .setTitle("Giới hạn: " + limit + " km/h")
+                .addText("Nguồn: " + sourceLabel(source))
+                .build());
+        pane.addRow(new Row.Builder()
+                .setTitle("Giới hạn kế: " + nextLimit + " km/h")
+                .addText("Sau " + formatDistance(nextDistance))
+                .build());
+        pane.addRow(new Row.Builder()
+                .setTitle("Camera phía trước")
+                .addText(formatDistance(camera))
+                .build());
 
-        return new GridTemplate.Builder()
-                .setTitle("CarHUD · " + sourceLabel(source))
+        return new PaneTemplate.Builder(pane.build())
+                .setTitle("CarHUD")
                 .setHeaderAction(Action.APP_ICON)
-                .setSingleList(list)
-                .build();
-    }
-
-    private static GridItem tile(String title, String text, String label) {
-        String main = (title == null || title.trim().isEmpty()) ? "--" : title.trim();
-        String detail = (text == null || text.trim().isEmpty()) ? "--" : text.trim();
-        return new GridItem.Builder()
-                .setTitle(main)
-                .setText(label + " · " + detail)
-                .setOnClickListener(() -> {})
                 .build();
     }
 
@@ -108,8 +108,8 @@ public class CarViewCarScreen extends Screen {
 
     private static String formatDistance(int meters) {
         if (meters < 0) return "--";
-        if (meters < 1000) return meters + "m";
-        return String.format(java.util.Locale.US, "%.1fkm", meters / 1000f);
+        if (meters < 1000) return meters + " m";
+        return String.format(java.util.Locale.US, "%.1f km", meters / 1000f);
     }
 
     private static String readString(SharedPreferences prefs, String key, String fallback) {
