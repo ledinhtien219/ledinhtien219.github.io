@@ -19,10 +19,15 @@ import java.util.WeakHashMap;
  * reliable onPageFinished() for the final /watch URL. Capturing WebView#getUrl()
  * from the activity lifecycle and periodically while visible makes cold-start
  * resume much more reliable.
+ *
+ * This application object also runs the best-effort YouTube ad skipper while
+ * the main activity is visible. Keeping it outside page callbacks means it also
+ * survives YouTube SPA navigation where onPageFinished() may not fire again.
  */
 public class SessionResumeApplication extends Application implements Application.ActivityLifecycleCallbacks {
     private static final String PREFS = "carview_settings";
     private static final long CAPTURE_INTERVAL_MS = 2000L;
+    private static final long AD_SKIP_INTERVAL_MS = 450L;
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final WeakHashMap<Activity, Boolean> freshlyCreated = new WeakHashMap<>();
@@ -34,6 +39,20 @@ public class SessionResumeApplication extends Application implements Application
             if (activity != null) {
                 captureSession(activity);
                 mainHandler.postDelayed(this, CAPTURE_INTERVAL_MS);
+            }
+        }
+    };
+
+    private final Runnable adSkipLoop = new Runnable() {
+        @Override public void run() {
+            Activity activity = currentMain.get();
+            if (activity != null) {
+                SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+                if (prefs.getBoolean("ad_filter", true)) {
+                    WebView web = findWebView(activity);
+                    if (web != null) YoutubeAdSkipper.run(web);
+                }
+                mainHandler.postDelayed(this, AD_SKIP_INTERVAL_MS);
             }
         }
     };
@@ -54,7 +73,9 @@ public class SessionResumeApplication extends Application implements Application
 
         currentMain = new WeakReference<>(activity);
         mainHandler.removeCallbacks(periodicCapture);
+        mainHandler.removeCallbacks(adSkipLoop);
         mainHandler.post(periodicCapture);
+        mainHandler.post(adSkipLoop);
 
         boolean isFresh = Boolean.TRUE.equals(freshlyCreated.remove(activity));
         if (isFresh) {
@@ -66,6 +87,7 @@ public class SessionResumeApplication extends Application implements Application
         if (!(activity instanceof MainActivity)) return;
         captureSession(activity);
         mainHandler.removeCallbacks(periodicCapture);
+        mainHandler.removeCallbacks(adSkipLoop);
     }
 
     @Override public void onActivityStopped(Activity activity) {
@@ -82,6 +104,7 @@ public class SessionResumeApplication extends Application implements Application
         if (activity instanceof MainActivity && currentMain.get() == activity) {
             currentMain.clear();
             mainHandler.removeCallbacks(periodicCapture);
+            mainHandler.removeCallbacks(adSkipLoop);
         }
         freshlyCreated.remove(activity);
     }
