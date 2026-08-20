@@ -3,14 +3,20 @@ package com.demo.mycarview;
 import android.app.Activity;
 import android.app.Application;
 import android.content.SharedPreferences;
+import android.graphics.Color;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.view.View;
+import android.view.ViewGroup;
 import android.webkit.WebView;
+import android.widget.TextView;
+import android.widget.Toast;
 
 import java.lang.ref.WeakReference;
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.util.WeakHashMap;
 
 /**
@@ -20,17 +26,19 @@ import java.util.WeakHashMap;
  * from the activity lifecycle and periodically while visible makes cold-start
  * resume much more reliable.
  *
- * This application object also runs the best-effort YouTube ad skipper while
- * the main activity is visible. Keeping it outside page callbacks means it also
- * survives YouTube SPA navigation where onPageFinished() may not fire again.
+ * This application object also runs the best-effort YouTube ad skipper and
+ * patches the car UI controls that need to survive YouTube SPA navigation.
  */
 public class SessionResumeApplication extends Application implements Application.ActivityLifecycleCallbacks {
     private static final String PREFS = "carview_settings";
+    private static final String HOME = "https://m.youtube.com";
     private static final long CAPTURE_INTERVAL_MS = 2000L;
     private static final long AD_SKIP_INTERVAL_MS = 450L;
+    private static final long ASPECT_UI_INTERVAL_MS = 900L;
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final WeakHashMap<Activity, Boolean> freshlyCreated = new WeakHashMap<>();
+    private final WeakHashMap<View, Boolean> patchedControls = new WeakHashMap<>();
     private WeakReference<Activity> currentMain = new WeakReference<>(null);
 
     private final Runnable periodicCapture = new Runnable() {
@@ -57,6 +65,17 @@ public class SessionResumeApplication extends Application implements Application
         }
     };
 
+    private final Runnable aspectUiLoop = new Runnable() {
+        @Override public void run() {
+            Activity activity = currentMain.get();
+            if (activity != null) {
+                installUiFixes(activity);
+                applySavedAspect(activity);
+                mainHandler.postDelayed(this, ASPECT_UI_INTERVAL_MS);
+            }
+        }
+    };
+
     @Override public void onCreate() {
         super.onCreate();
         registerActivityLifecycleCallbacks(this);
@@ -74,8 +93,13 @@ public class SessionResumeApplication extends Application implements Application
         currentMain = new WeakReference<>(activity);
         mainHandler.removeCallbacks(periodicCapture);
         mainHandler.removeCallbacks(adSkipLoop);
+        mainHandler.removeCallbacks(aspectUiLoop);
         mainHandler.post(periodicCapture);
         mainHandler.post(adSkipLoop);
+        mainHandler.post(aspectUiLoop);
+
+        installUiFixes(activity);
+        applySavedAspect(activity);
 
         boolean isFresh = Boolean.TRUE.equals(freshlyCreated.remove(activity));
         if (isFresh) {
@@ -88,6 +112,7 @@ public class SessionResumeApplication extends Application implements Application
         captureSession(activity);
         mainHandler.removeCallbacks(periodicCapture);
         mainHandler.removeCallbacks(adSkipLoop);
+        mainHandler.removeCallbacks(aspectUiLoop);
     }
 
     @Override public void onActivityStopped(Activity activity) {
@@ -105,8 +130,167 @@ public class SessionResumeApplication extends Application implements Application
             currentMain.clear();
             mainHandler.removeCallbacks(periodicCapture);
             mainHandler.removeCallbacks(adSkipLoop);
+            mainHandler.removeCallbacks(aspectUiLoop);
         }
         freshlyCreated.remove(activity);
+    }
+
+    /**
+     * MainActivity's original controls were intentionally simple. YouTube's SPA
+     * sometimes reports canGoBack() == false even though window.history can go
+     * back, and its video element can be recreated after a ratio change. Patch
+     * the visible controls so both behaviours are reliable.
+     */
+    private void installUiFixes(Activity activity) {
+        View decor = activity.getWindow() != null ? activity.getWindow().getDecorView() : null;
+        if (decor == null) return;
+        patchViewTree(activity, decor);
+    }
+
+    private void patchViewTree(Activity activity, View view) {
+        if (view instanceof TextView && !patchedControls.containsKey(view)) {
+            String label = ((TextView) view).getText() == null ? "" : ((TextView) view).getText().toString();
+            if ("←".equals(label)) {
+                view.setOnClickListener(v -> performBackNavigation(activity));
+                patchedControls.put(view, true);
+            } else if ("▣".equals(label)) {
+                view.setOnClickListener(v -> cycleAspect(activity));
+                patchedControls.put(view, true);
+            }
+        }
+
+        if (view instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) view;
+            for (int i = 0; i < group.getChildCount(); i++) {
+                patchViewTree(activity, group.getChildAt(i));
+            }
+        }
+    }
+
+    private void performBackNavigation(Activity activity) {
+        if (findCustomView(activity) != null) {
+            invokeHideCustomView(activity);
+            return;
+        }
+
+        WebView web = findWebView(activity);
+        if (web == null) return;
+
+        if (web.canGoBack()) {
+            web.goBack();
+            return;
+        }
+
+        final String before = web.getUrl();
+        try {
+            web.evaluateJavascript(
+                    "(function(){if(window.history&&history.length>1){history.back();return 'back';}return 'none';})()",
+                    result -> {
+                        if (result == null || result.contains("none")) {
+                            fallbackBack(web, before);
+                            return;
+                        }
+                        mainHandler.postDelayed(() -> {
+                            String now = web.getUrl();
+                            if (!isHttpUrl(now) || sameUrl(now, before)) {
+                                fallbackBack(web, before);
+                            }
+                        }, 900L);
+                    });
+        } catch (Throwable ignored) {
+            fallbackBack(web, before);
+        }
+    }
+
+    private void fallbackBack(WebView web, String before) {
+        if (web == null) return;
+        if (before == null || !isYoutubeHome(before)) {
+            web.loadUrl(HOME);
+        }
+    }
+
+    private boolean isYoutubeHome(String url) {
+        if (url == null) return false;
+        try {
+            Uri uri = Uri.parse(url);
+            String host = uri.getHost();
+            String path = uri.getPath();
+            boolean youtube = host != null && (host.equals("youtube.com") || host.endsWith(".youtube.com"));
+            return youtube && (path == null || path.isEmpty() || "/".equals(path));
+        } catch (Throwable ignored) {
+            return HOME.equals(url);
+        }
+    }
+
+    private boolean sameUrl(String a, String b) {
+        if (a == null || b == null) return a == null && b == null;
+        return a.equals(b);
+    }
+
+    private void cycleAspect(Activity activity) {
+        SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        String current = prefs.getString("video_aspect_mode", "contain");
+        String next;
+        if ("contain".equals(current)) next = "cover";
+        else if ("cover".equals(current)) next = "fill";
+        else next = "contain";
+
+        prefs.edit().putString("video_aspect_mode", next).apply();
+        applySavedAspect(activity);
+
+        boolean english = "en".equals(prefs.getString("language", "vi"));
+        String name;
+        if ("cover".equals(next)) name = english ? "Crop / Fill screen" : "Cắt viền / Phủ kín";
+        else if ("fill".equals(next)) name = english ? "Stretch" : "Kéo giãn";
+        else name = english ? "Fit / Original ratio" : "Vừa khung / Giữ tỉ lệ";
+        Toast.makeText(activity,
+                (english ? "Video ratio: " : "Tỉ lệ video: ") + name,
+                Toast.LENGTH_SHORT).show();
+    }
+
+    private void applySavedAspect(Activity activity) {
+        WebView web = findWebView(activity);
+        if (web == null) return;
+
+        SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        String mode = prefs.getString("video_aspect_mode", "contain");
+        if (!"contain".equals(mode) && !"cover".equals(mode) && !"fill".equals(mode)) {
+            mode = "contain";
+        }
+
+        String js = "(function(){" +
+                "var m='" + mode + "';" +
+                "var vs=document.querySelectorAll('video');" +
+                "for(var i=0;i<vs.length;i++){" +
+                "var v=vs[i];" +
+                "v.style.setProperty('object-fit',m,'important');" +
+                "v.style.setProperty('width','100%','important');" +
+                "v.style.setProperty('height','100%','important');" +
+                "v.style.setProperty('max-width','none','important');" +
+                "v.style.setProperty('max-height','none','important');" +
+                "}" +
+                "var cs=document.querySelectorAll('.html5-video-container,.html5-video-player,.player-container,ytm-player');" +
+                "for(var j=0;j<cs.length;j++){" +
+                "cs[j].style.setProperty('width','100%','important');" +
+                "cs[j].style.setProperty('height','100%','important');" +
+                "cs[j].style.setProperty('overflow','hidden','important');" +
+                "cs[j].style.setProperty('background','#000','important');" +
+                "}" +
+                "return vs.length;" +
+                "})()";
+        try {
+            web.evaluateJavascript(js, null);
+        } catch (Throwable ignored) {
+        }
+
+        // Keep the native fullscreen host neutral; the DOM video above decides
+        // contain / cover / fill even while WebChromeClient shows customView.
+        View custom = findCustomView(activity);
+        if (custom != null) {
+            custom.setBackgroundColor(Color.BLACK);
+            custom.setScaleX(1f);
+            custom.setScaleY(1f);
+        }
     }
 
     private void captureSession(Activity activity) {
@@ -145,8 +329,6 @@ public class SessionResumeApplication extends Application implements Application
         SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         if (!prefs.getBoolean("auto_resume", true)) return;
 
-        // YouTube creates/replaces its <video> element asynchronously. A few
-        // delayed attempts handle both normal /watch pages and SPA hydration.
         long[] delays = {900L, 2200L, 4200L, 6500L};
         WeakReference<Activity> ref = new WeakReference<>(activity);
         for (long delay : delays) {
@@ -154,6 +336,7 @@ public class SessionResumeApplication extends Application implements Application
                 Activity a = ref.get();
                 if (a == null || a.isFinishing() || a.isDestroyed()) return;
                 resumeVideoIfPossible(a);
+                applySavedAspect(a);
             }, delay);
         }
     }
@@ -195,6 +378,27 @@ public class SessionResumeApplication extends Application implements Application
             return value instanceof WebView ? (WebView) value : null;
         } catch (Throwable ignored) {
             return null;
+        }
+    }
+
+    private View findCustomView(Activity activity) {
+        try {
+            Field field = MainActivity.class.getDeclaredField("customView");
+            field.setAccessible(true);
+            Object value = field.get(activity);
+            return value instanceof View ? (View) value : null;
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private void invokeHideCustomView(Activity activity) {
+        try {
+            Method method = MainActivity.class.getDeclaredMethod("hideCustomView");
+            method.setAccessible(true);
+            method.invoke(activity);
+        } catch (Throwable ignored) {
+            activity.onBackPressed();
         }
     }
 
