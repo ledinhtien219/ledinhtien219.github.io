@@ -32,76 +32,71 @@ import androidx.car.app.navigation.model.MapWithContentTemplate;
 import androidx.lifecycle.DefaultLifecycleObserver;
 import androidx.lifecycle.LifecycleOwner;
 
+import java.util.Map;
+
 /**
- * CarView Drive dashboard for Android Auto.
+ * Stable Android Auto Road HUD.
  *
- * The car host owns template chrome. CarView renders the map/background surface and
- * a compact road-alert board inspired by the user's VIETMAP LIVE reference:
- * current limit, GPS speed, upcoming camera + distance, next limit + distance.
- *
- * Waze consumer app does not expose a public limit/camera feed, so Waze mode uses
- * phone GPS for current speed and leaves unsupported road-alert fields unknown.
- * VIETMAP road-alert fields are read from the shared CarView data store, ready for
- * a documented/authorized VIETMAP feed to populate them.
+ * Dynamic speed/road data is rendered on the app-owned map surface. The Android
+ * Auto template itself stays mostly static so the host is not rebuilt every second.
+ * Surface access is serialized to avoid drawing while the host destroys/replaces it.
  */
 public class CarViewCarScreen extends Screen {
     private static final String PREFS = "carview_settings";
 
     private final SharedPreferences prefs;
-    private final Handler handler = new Handler(Looper.getMainLooper());
+    private final Handler main = new Handler(Looper.getMainLooper());
     private final MapSurfaceRenderer renderer = new MapSurfaceRenderer();
 
     private LocationManager locationManager;
     private LocationListener locationListener;
     private boolean running;
 
-    private int speedKmh;
-    private String speedSource;
-    private String speedLimit;
-    private String nextSpeedLimit;
-    private int cameraDistanceM;
-    private int nextLimitDistanceM;
-    private double latitude = Double.NaN;
-    private double longitude = Double.NaN;
+    private volatile int speedKmh;
+    private volatile String speedSource = "waze";
+    private volatile String speedLimit = "--";
+    private volatile String nextSpeedLimit = "--";
+    private volatile int cameraDistanceM = -1;
+    private volatile int nextLimitDistanceM = -1;
+    private volatile double latitude = Double.NaN;
 
     private final Runnable refreshRunnable = new Runnable() {
         @Override public void run() {
             if (!running) return;
-            readPrefs();
-            invalidate();
-            renderer.draw();
-            handler.postDelayed(this, 1000L);
+            readPrefsCompat();
+            renderer.scheduleDraw();
+            main.postDelayed(this, 1000L);
         }
     };
 
     public CarViewCarScreen(@NonNull CarContext carContext) {
         super(carContext);
         prefs = carContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-        readPrefs();
+        readPrefsCompat();
 
         try {
             carContext.getCarService(AppManager.class).setSurfaceCallback(renderer);
         } catch (Throwable ignored) {
-            // Older hosts can still use the PaneTemplate fallback.
+            // A host without a drawable map surface can still show the Pane fallback.
         }
 
         getLifecycle().addObserver(new DefaultLifecycleObserver() {
             @Override public void onStart(@NonNull LifecycleOwner owner) {
                 running = true;
                 startLocationUpdates();
-                handler.removeCallbacks(refreshRunnable);
-                handler.post(refreshRunnable);
+                main.removeCallbacks(refreshRunnable);
+                main.post(refreshRunnable);
             }
 
             @Override public void onStop(@NonNull LifecycleOwner owner) {
                 running = false;
-                handler.removeCallbacks(refreshRunnable);
+                main.removeCallbacks(refreshRunnable);
                 stopLocationUpdates();
             }
 
             @Override public void onDestroy(@NonNull LifecycleOwner owner) {
                 running = false;
-                handler.removeCallbacksAndMessages(null);
+                main.removeCallbacks(refreshRunnable);
                 stopLocationUpdates();
                 try {
                     getCarContext().getCarService(AppManager.class).setSurfaceCallback(null);
@@ -115,63 +110,61 @@ public class CarViewCarScreen extends Screen {
     @NonNull
     @Override
     public Template onGetTemplate() {
-        readPrefs();
-
-        Row source = new Row.Builder()
-                .setTitle(displaySource())
-                .addText("Tốc độ " + speedKmh + " km/h · Giới hạn " + displayLimitText())
-                .build();
-
-        Row alerts = new Row.Builder()
-                .setTitle("Cảnh báo phía trước")
-                .addText(displayCameraText() + " · " + displayNextLimitText())
-                .build();
-
-        Action refresh = new Action.Builder()
-                .setTitle("Làm mới")
-                .setOnClickListener(() -> {
-                    readPrefs();
-                    invalidate();
-                    renderer.draw();
-                })
-                .build();
-
-        Pane pane = new Pane.Builder()
-                .addRow(source)
-                .addRow(alerts)
-                .addAction(refresh)
-                .build();
-
-        PaneTemplate content = new PaneTemplate.Builder(pane)
-                .setHeaderAction(Action.APP_ICON)
-                .setTitle("CarView Road HUD")
-                .build();
+        readPrefsCompat();
+        PaneTemplate content = buildSafePane();
 
         if (getCarContext().getCarAppApiLevel() >= 7) {
-            return new MapWithContentTemplate.Builder()
-                    .setContentTemplate(content)
-                    .build();
+            try {
+                return new MapWithContentTemplate.Builder()
+                        .setContentTemplate(content)
+                        .build();
+            } catch (Throwable ignored) {
+                // Some OEM hosts are stricter than DHU; fall back instead of disconnecting.
+            }
         }
-
         return content;
     }
 
-    private void readPrefs() {
-        speedSource = prefs.getString("speed_source", "waze");
-        speedLimit = normalizeLimit(prefs.getString("limit", "--"));
-        nextSpeedLimit = normalizeLimit(prefs.getString("next_limit", "--"));
-        cameraDistanceM = prefs.getInt("camera_distance_m", -1);
-        nextLimitDistanceM = prefs.getInt("next_limit_distance_m", -1);
+    private PaneTemplate buildSafePane() {
+        Row status = new Row.Builder()
+                .setTitle(displaySource())
+                .addText("Road HUD · dữ liệu cập nhật trên bảng phía trên")
+                .build();
 
+        Row detail = new Row.Builder()
+                .setTitle("Tốc độ " + speedKmh + " km/h")
+                .addText("Giới hạn " + displayLimitText() + " · " + displayCameraText())
+                .build();
+
+        Pane pane = new Pane.Builder()
+                .addRow(status)
+                .addRow(detail)
+                .build();
+
+        return new PaneTemplate.Builder(pane)
+                .setHeaderAction(Action.APP_ICON)
+                .setTitle("CarView Road HUD")
+                .build();
+    }
+
+    /** Reads legacy String/Int preference values without ClassCastException. */
+    private void readPrefsCompat() {
+        Map<String, ?> all;
         try {
-            speedKmh = Integer.parseInt(prefs.getString("speed", "0"));
-        } catch (NumberFormatException ignored) {
-            speedKmh = 0;
+            all = prefs.getAll();
+        } catch (Throwable ignored) {
+            return;
         }
-        speedKmh = Math.max(0, Math.min(300, speedKmh));
 
-        // Do not invent Waze road-alert data. Only current GPS speed is available.
+        speedSource = valueAsString(all.get("speed_source"), "waze").toLowerCase();
+        speedLimit = normalizeLimit(valueAsString(all.get("limit"), "--"));
+        nextSpeedLimit = normalizeLimit(valueAsString(all.get("next_limit"), "--"));
+        cameraDistanceM = valueAsInt(all.get("camera_distance_m"), -1);
+        nextLimitDistanceM = valueAsInt(all.get("next_limit_distance_m"), -1);
+        speedKmh = clamp(valueAsInt(all.get("speed"), speedKmh), 0, 300);
+
         if ("waze".equals(speedSource)) {
+            // Waze consumer app has no public camera/limit feed; never fabricate it.
             speedLimit = "--";
             nextSpeedLimit = "--";
             cameraDistanceM = -1;
@@ -179,15 +172,30 @@ public class CarViewCarScreen extends Screen {
         }
     }
 
+    private String valueAsString(Object value, String fallback) {
+        if (value == null) return fallback;
+        String text = String.valueOf(value).trim();
+        return text.isEmpty() ? fallback : text;
+    }
+
+    private int valueAsInt(Object value, int fallback) {
+        if (value instanceof Number) return ((Number) value).intValue();
+        if (value instanceof String) {
+            try { return Integer.parseInt(((String) value).trim()); }
+            catch (NumberFormatException ignored) { return fallback; }
+        }
+        return fallback;
+    }
+
+    private int clamp(int value, int min, int max) {
+        return Math.max(min, Math.min(max, value));
+    }
+
     private String normalizeLimit(String value) {
-        if (value == null) return "--";
-        value = value.trim();
-        if (value.isEmpty()) return "--";
         try {
-            int n = Integer.parseInt(value);
-            if (n <= 0 || n > 200) return "--";
-            return String.valueOf(n);
-        } catch (NumberFormatException ignored) {
+            int n = Integer.parseInt(value.trim());
+            return (n > 0 && n <= 200) ? String.valueOf(n) : "--";
+        } catch (Throwable ignored) {
             return "--";
         }
     }
@@ -198,12 +206,6 @@ public class CarViewCarScreen extends Screen {
 
     private String displayCameraText() {
         return cameraDistanceM >= 0 ? "Camera " + formatDistance(cameraDistanceM) : "Camera --";
-    }
-
-    private String displayNextLimitText() {
-        if ("--".equals(nextSpeedLimit)) return "Giới hạn tiếp --";
-        return "Giới hạn " + nextSpeedLimit + " · " +
-                (nextLimitDistanceM >= 0 ? formatDistance(nextLimitDistanceM) : "--");
     }
 
     private String displaySource() {
@@ -217,7 +219,9 @@ public class CarViewCarScreen extends Screen {
         if (meters < 0) return "--";
         if (meters < 1000) return meters + "m";
         float km = meters / 1000f;
-        return km < 10f ? String.format(java.util.Locale.US, "%.1fkm", km) : Math.round(km) + "km";
+        return km < 10f
+                ? String.format(java.util.Locale.US, "%.1fkm", km)
+                : Math.round(km) + "km";
     }
 
     private void startLocationUpdates() {
@@ -234,13 +238,11 @@ public class CarViewCarScreen extends Screen {
         locationListener = new LocationListener() {
             @Override public void onLocationChanged(@NonNull Location location) {
                 latitude = location.getLatitude();
-                longitude = location.getLongitude();
                 if (location.hasSpeed()) {
-                    speedKmh = Math.max(0, Math.min(300, Math.round(location.getSpeed() * 3.6f)));
+                    speedKmh = clamp(Math.round(location.getSpeed() * 3.6f), 0, 300);
                     prefs.edit().putString("speed", String.valueOf(speedKmh)).apply();
                 }
-                invalidate();
-                renderer.draw();
+                renderer.scheduleDraw();
             }
 
             @Override public void onProviderDisabled(@NonNull String provider) {}
@@ -252,242 +254,232 @@ public class CarViewCarScreen extends Screen {
             locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0f, locationListener);
             Location last = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER);
             if (last != null) locationListener.onLocationChanged(last);
-        } catch (SecurityException ignored) {
+        } catch (Throwable ignored) {
             locationListener = null;
         }
     }
 
     private void stopLocationUpdates() {
         if (locationManager != null && locationListener != null) {
-            try {
-                locationManager.removeUpdates(locationListener);
-            } catch (SecurityException ignored) {
-            }
+            try { locationManager.removeUpdates(locationListener); }
+            catch (Throwable ignored) {}
         }
         locationListener = null;
     }
 
     private final class MapSurfaceRenderer implements SurfaceCallback {
+        private final Object surfaceLock = new Object();
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Path cameraShape = new Path();
+
         @Nullable private Surface surface;
         private int width;
         private int height;
         private Rect visibleArea = new Rect();
+        private boolean drawQueued;
 
-        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Path route = new Path();
-
-        @Override public void onSurfaceAvailable(@NonNull SurfaceContainer surfaceContainer) {
-            Surface next = surfaceContainer.getSurface();
-            if (surface != null && surface != next) {
-                try { surface.release(); } catch (Throwable ignored) {}
+        @Override public void onSurfaceAvailable(@NonNull SurfaceContainer container) {
+            synchronized (surfaceLock) {
+                Surface next = container.getSurface();
+                if (surface != null && surface != next) {
+                    try { surface.release(); } catch (Throwable ignored) {}
+                }
+                surface = next;
+                width = Math.max(0, container.getWidth());
+                height = Math.max(0, container.getHeight());
             }
-            surface = next;
-            width = surfaceContainer.getWidth();
-            height = surfaceContainer.getHeight();
-            draw();
+            scheduleDraw();
         }
 
-        @Override public void onSurfaceDestroyed(@NonNull SurfaceContainer surfaceContainer) {
+        @Override public void onSurfaceDestroyed(@NonNull SurfaceContainer container) {
             release();
         }
 
         @Override public void onVisibleAreaChanged(@NonNull Rect area) {
-            visibleArea = new Rect(area);
-            draw();
+            synchronized (surfaceLock) {
+                visibleArea = new Rect(area);
+            }
+            scheduleDraw();
         }
 
         @Override public void onStableAreaChanged(@NonNull Rect stableArea) {
-            draw();
+            scheduleDraw();
+        }
+
+        void scheduleDraw() {
+            synchronized (surfaceLock) {
+                if (drawQueued) return;
+                drawQueued = true;
+            }
+            main.post(() -> {
+                synchronized (surfaceLock) { drawQueued = false; }
+                drawNow();
+            });
         }
 
         void release() {
-            if (surface != null) {
-                try { surface.release(); } catch (Throwable ignored) {}
-                surface = null;
+            synchronized (surfaceLock) {
+                if (surface != null) {
+                    try { surface.release(); } catch (Throwable ignored) {}
+                    surface = null;
+                }
+                width = 0;
+                height = 0;
             }
         }
 
-        void draw() {
-            Surface target = surface;
-            if (target == null || !target.isValid() || width <= 0 || height <= 0) return;
+        private void drawNow() {
+            synchronized (surfaceLock) {
+                Surface target = surface;
+                if (target == null || !target.isValid() || width <= 0 || height <= 0) return;
 
-            Canvas canvas = null;
-            try {
-                canvas = target.lockCanvas(null);
-                drawMap(canvas, width, height);
-            } catch (Throwable ignored) {
-            } finally {
-                if (canvas != null) {
-                    try { target.unlockCanvasAndPost(canvas); } catch (Throwable ignored) {}
+                Canvas canvas = null;
+                try {
+                    canvas = target.lockCanvas(null);
+                    drawBackground(canvas, width, height);
+                    drawRoadHud(canvas, width, height, visibleArea);
+                } catch (Throwable ignored) {
+                    // Do not let an OEM Surface lifecycle race disconnect the car session.
+                } finally {
+                    if (canvas != null) {
+                        try { target.unlockCanvasAndPost(canvas); } catch (Throwable ignored) {}
+                    }
                 }
             }
         }
 
-        private void drawMap(Canvas canvas, int w, int h) {
-            canvas.drawColor(0xFF0A0F14);
-
+        private void drawBackground(Canvas canvas, int w, int h) {
+            canvas.drawColor(0xFF080C10);
             paint.setStyle(Paint.Style.STROKE);
-            paint.setStrokeWidth(Math.max(2f, w / 520f));
-            paint.setColor(0xFF1C2933);
-            for (int i = -2; i <= 8; i++) {
-                float y = h * (i / 7f);
-                canvas.drawLine(0, y, w, y + h * 0.23f, paint);
+            paint.setStrokeWidth(Math.max(2f, w / 500f));
+            paint.setColor(0xFF1A2730);
+            for (int i = 0; i < 8; i++) {
+                float y = h * (0.18f + i * 0.11f);
+                canvas.drawLine(0, y, w, y - h * 0.10f, paint);
             }
-            for (int i = -2; i <= 10; i++) {
-                float x = w * (i / 9f);
-                canvas.drawLine(x, 0, x - w * 0.18f, h, paint);
-            }
-
             paint.setStrokeWidth(Math.max(5f, w / 190f));
-            paint.setColor(0xFF354753);
-            canvas.drawLine(w * 0.06f, h * 0.76f, w * 0.92f, h * 0.28f, paint);
-            canvas.drawLine(w * 0.18f, h * 0.08f, w * 0.78f, h * 0.94f, paint);
-
-            route.reset();
-            route.moveTo(w * 0.18f, h * 0.72f);
-            route.cubicTo(w * 0.35f, h * 0.68f, w * 0.34f, h * 0.48f, w * 0.49f, h * 0.50f);
-            route.cubicTo(w * 0.64f, h * 0.52f, w * 0.65f, h * 0.31f, w * 0.84f, h * 0.27f);
-            paint.setColor(0xFF3FA7FF);
-            paint.setStrokeWidth(Math.max(8f, w / 120f));
-            paint.setStrokeCap(Paint.Cap.ROUND);
-            canvas.drawPath(route, paint);
-
-            float cx = w * 0.49f;
-            float cy = h * 0.50f;
-            paint.setStyle(Paint.Style.FILL);
-            paint.setColor(0xFFFFFFFF);
-            canvas.drawCircle(cx, cy, Math.max(13f, w / 70f), paint);
-            paint.setColor(0xFF19A4F6);
-            canvas.drawCircle(cx, cy, Math.max(8f, w / 110f), paint);
-
-            drawRoadHud(canvas, w, h);
+            paint.setColor(0xFF364854);
+            canvas.drawLine(w * 0.05f, h * 0.78f, w * 0.95f, h * 0.30f, paint);
         }
 
-        private void drawRoadHud(Canvas canvas, int w, int h) {
-            float visibleLeft = visibleArea.isEmpty() ? w * 0.02f : Math.max(w * 0.02f, visibleArea.left + w * 0.01f);
-            float visibleRight = visibleArea.isEmpty() ? w * 0.98f : Math.min(w * 0.98f, visibleArea.right - w * 0.01f);
-            float top = visibleArea.isEmpty() ? h * 0.025f : Math.max(h * 0.025f, visibleArea.top + h * 0.015f);
-            float panelW = Math.max(w * 0.50f, visibleRight - visibleLeft);
-            float panelH = Math.min(h * 0.27f, Math.max(120f, h * 0.22f));
+        private void drawRoadHud(Canvas canvas, int w, int h, Rect area) {
+            float left = area.isEmpty() ? w * 0.025f : Math.max(w * 0.025f, area.left + w * 0.012f);
+            float right = area.isEmpty() ? w * 0.975f : Math.min(w * 0.975f, area.right - w * 0.012f);
+            if (right <= left) { left = w * 0.025f; right = w * 0.975f; }
+
+            float top = area.isEmpty() ? h * 0.035f : Math.max(h * 0.035f, area.top + h * 0.02f);
+            float panelW = Math.max(w * 0.60f, right - left);
+            panelW = Math.min(panelW, w - left - w * 0.02f);
+            float panelH = Math.max(110f, Math.min(h * 0.30f, h - top - 20f));
             float bottom = top + panelH;
-            float radius = Math.max(20f, w / 65f);
+            float radius = Math.max(18f, w / 70f);
 
             paint.setStyle(Paint.Style.FILL);
-            paint.setColor(0xE9141A1F);
-            canvas.drawRoundRect(visibleLeft, top, visibleLeft + panelW, bottom, radius, radius, paint);
+            paint.setColor(0xEE11171D);
+            canvas.drawRoundRect(left, top, left + panelW, bottom, radius, radius, paint);
 
-            paint.setColor(0xFF25313B);
-            paint.setStyle(Paint.Style.STROKE);
-            paint.setStrokeWidth(Math.max(2f, w / 700f));
-            canvas.drawRoundRect(visibleLeft + 2f, top + 2f, visibleLeft + panelW - 2f, bottom - 2f, radius, radius, paint);
-
-            float headerH = panelH * 0.28f;
-            paint.setStyle(Paint.Style.FILL);
-            paint.setColor(0xFFE8EDF2);
-            paint.setTextSize(Math.max(16f, panelH * 0.14f));
+            paint.setColor(0xFFE9EEF2);
             paint.setFakeBoldText(true);
-            canvas.drawText(displaySource(), visibleLeft + panelW * 0.035f, top + headerH * 0.72f, paint);
-
+            paint.setTextAlign(Paint.Align.LEFT);
+            paint.setTextSize(Math.max(15f, panelH * 0.14f));
+            canvas.drawText(displaySource(), left + panelW * 0.03f, top + panelH * 0.19f, paint);
             paint.setFakeBoldText(false);
-            paint.setColor(0xFF93A4B2);
-            paint.setTextSize(Math.max(11f, panelH * 0.09f));
-            String gps = Double.isNaN(latitude) ? "GPS đang chờ" : "GPS trực tiếp";
-            canvas.drawText(gps, visibleLeft + panelW * 0.035f, top + headerH * 1.12f, paint);
 
-            float contentTop = top + headerH;
-            float contentH = bottom - contentTop;
+            float contentTop = top + panelH * 0.28f;
+            float contentH = panelH * 0.62f;
             float colW = panelW / 4f;
+            float cy = contentTop + contentH * 0.42f;
+            float r = Math.min(colW * 0.22f, contentH * 0.34f);
+
             for (int i = 1; i < 4; i++) {
-                float x = visibleLeft + colW * i;
-                paint.setColor(0xFF232B32);
+                float x = left + colW * i;
+                paint.setColor(0xFF2A333A);
                 paint.setStrokeWidth(1.5f);
-                canvas.drawLine(x, contentTop + contentH * 0.12f, x, bottom - contentH * 0.12f, paint);
+                canvas.drawLine(x, contentTop, x, bottom - panelH * 0.08f, paint);
             }
 
-            float circleY = contentTop + contentH * 0.46f;
-            float circleR = Math.min(colW * 0.22f, contentH * 0.30f);
-
-            drawLimitTile(canvas, visibleLeft + colW * 0.5f, circleY, circleR, speedLimit, null);
-            drawSpeedTile(canvas, visibleLeft + colW * 1.5f, circleY, circleR, speedKmh);
-            drawCameraTile(canvas, visibleLeft + colW * 2.5f, circleY, circleR, cameraDistanceM);
-            drawLimitTile(canvas, visibleLeft + colW * 3.5f, circleY, circleR, nextSpeedLimit,
+            drawLimit(canvas, left + colW * 0.5f, cy, r, speedLimit, null);
+            drawSpeed(canvas, left + colW * 1.5f, cy, r, speedKmh);
+            drawCamera(canvas, left + colW * 2.5f, cy, r, cameraDistanceM);
+            drawLimit(canvas, left + colW * 3.5f, cy, r, nextSpeedLimit,
                     nextLimitDistanceM >= 0 ? formatDistance(nextLimitDistanceM) : "--");
+
+            paint.setTextAlign(Paint.Align.LEFT);
+            paint.setFakeBoldText(false);
         }
 
-        private void drawLimitTile(Canvas canvas, float cx, float cy, float r, String limit, @Nullable String distance) {
+        private void drawLimit(Canvas canvas, float cx, float cy, float r, String limit, @Nullable String distance) {
             paint.setStyle(Paint.Style.FILL);
             paint.setColor(0xFFF7F7F7);
             canvas.drawCircle(cx, cy, r, paint);
             paint.setStyle(Paint.Style.STROKE);
-            paint.setStrokeWidth(Math.max(5f, r * 0.16f));
+            paint.setStrokeWidth(Math.max(4f, r * 0.15f));
             paint.setColor(0xFFFF3030);
-            canvas.drawCircle(cx, cy, r * 0.92f, paint);
+            canvas.drawCircle(cx, cy, r * 0.91f, paint);
 
             paint.setStyle(Paint.Style.FILL);
             paint.setTextAlign(Paint.Align.CENTER);
             paint.setColor(0xFF121212);
             paint.setFakeBoldText(true);
-            paint.setTextSize(Math.max(18f, r * 0.78f));
+            paint.setTextSize(Math.max(16f, r * 0.76f));
             canvas.drawText(limit == null ? "--" : limit, cx, cy + r * 0.27f, paint);
             paint.setFakeBoldText(false);
 
             if (distance != null) {
-                paint.setColor(0xFFE3E7EA);
-                paint.setTextSize(Math.max(11f, r * 0.42f));
-                canvas.drawText(distance, cx, cy + r * 1.55f, paint);
+                paint.setColor(0xFFE5E9EC);
+                paint.setTextSize(Math.max(10f, r * 0.40f));
+                canvas.drawText(distance, cx, cy + r * 1.50f, paint);
             }
-            paint.setTextAlign(Paint.Align.LEFT);
         }
 
-        private void drawSpeedTile(Canvas canvas, float cx, float cy, float r, int speed) {
+        private void drawSpeed(Canvas canvas, float cx, float cy, float r, int speed) {
             paint.setStyle(Paint.Style.FILL);
-            paint.setColor(0xFFFAFAFA);
+            paint.setColor(0xFFF8F8F8);
             canvas.drawCircle(cx, cy, r, paint);
             paint.setStyle(Paint.Style.STROKE);
-            paint.setStrokeWidth(Math.max(4f, r * 0.12f));
-            paint.setColor(0xFF2D78FF);
-            canvas.drawCircle(cx, cy, r * 0.94f, paint);
+            paint.setStrokeWidth(Math.max(4f, r * 0.11f));
+            paint.setColor(0xFF2878FF);
+            canvas.drawCircle(cx, cy, r * 0.93f, paint);
 
             paint.setStyle(Paint.Style.FILL);
             paint.setTextAlign(Paint.Align.CENTER);
             paint.setColor(0xFF101820);
             paint.setFakeBoldText(true);
-            paint.setTextSize(Math.max(18f, r * 0.78f));
-            canvas.drawText(String.valueOf(speed), cx, cy + r * 0.12f, paint);
+            paint.setTextSize(Math.max(16f, r * 0.74f));
+            canvas.drawText(String.valueOf(speed), cx, cy + r * 0.10f, paint);
             paint.setFakeBoldText(false);
-            paint.setTextSize(Math.max(10f, r * 0.30f));
-            canvas.drawText("km/h", cx, cy + r * 0.55f, paint);
-            paint.setTextAlign(Paint.Align.LEFT);
+            paint.setTextSize(Math.max(9f, r * 0.28f));
+            canvas.drawText("km/h", cx, cy + r * 0.52f, paint);
         }
 
-        private void drawCameraTile(Canvas canvas, float cx, float cy, float r, int distanceM) {
+        private void drawCamera(Canvas canvas, float cx, float cy, float r, int distanceM) {
             paint.setStyle(Paint.Style.FILL);
             paint.setColor(0xFFF7F7F7);
             canvas.drawCircle(cx, cy, r, paint);
             paint.setStyle(Paint.Style.STROKE);
-            paint.setStrokeWidth(Math.max(5f, r * 0.16f));
+            paint.setStrokeWidth(Math.max(4f, r * 0.15f));
             paint.setColor(0xFFFF3030);
-            canvas.drawCircle(cx, cy, r * 0.92f, paint);
+            canvas.drawCircle(cx, cy, r * 0.91f, paint);
 
             paint.setStyle(Paint.Style.FILL);
             paint.setColor(0xFF111111);
-            float bodyW = r * 0.95f;
-            float bodyH = r * 0.46f;
-            canvas.drawRoundRect(cx - bodyW * 0.48f, cy - bodyH * 0.45f,
-                    cx + bodyW * 0.32f, cy + bodyH * 0.45f, r * 0.10f, r * 0.10f, paint);
-            Path lens = new Path();
-            lens.moveTo(cx + bodyW * 0.25f, cy - bodyH * 0.30f);
-            lens.lineTo(cx + bodyW * 0.55f, cy - bodyH * 0.62f);
-            lens.lineTo(cx + bodyW * 0.55f, cy + bodyH * 0.62f);
-            lens.lineTo(cx + bodyW * 0.25f, cy + bodyH * 0.30f);
-            lens.close();
-            canvas.drawPath(lens, paint);
+            float bw = r * 0.90f;
+            float bh = r * 0.42f;
+            canvas.drawRoundRect(cx - bw * 0.46f, cy - bh * 0.45f,
+                    cx + bw * 0.28f, cy + bh * 0.45f, r * 0.08f, r * 0.08f, paint);
+            cameraShape.reset();
+            cameraShape.moveTo(cx + bw * 0.23f, cy - bh * 0.28f);
+            cameraShape.lineTo(cx + bw * 0.53f, cy - bh * 0.58f);
+            cameraShape.lineTo(cx + bw * 0.53f, cy + bh * 0.58f);
+            cameraShape.lineTo(cx + bw * 0.23f, cy + bh * 0.28f);
+            cameraShape.close();
+            canvas.drawPath(cameraShape, paint);
 
             paint.setTextAlign(Paint.Align.CENTER);
-            paint.setColor(0xFFE3E7EA);
-            paint.setTextSize(Math.max(11f, r * 0.42f));
-            canvas.drawText(distanceM >= 0 ? formatDistance(distanceM) : "--", cx, cy + r * 1.55f, paint);
-            paint.setTextAlign(Paint.Align.LEFT);
+            paint.setColor(0xFFE5E9EC);
+            paint.setTextSize(Math.max(10f, r * 0.40f));
+            canvas.drawText(distanceM >= 0 ? formatDistance(distanceM) : "--",
+                    cx, cy + r * 1.50f, paint);
         }
     }
 }
