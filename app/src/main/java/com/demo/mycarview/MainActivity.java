@@ -3,6 +3,7 @@ package com.demo.mycarview;
 import android.app.Activity;
 import android.app.PictureInPictureParams;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.ActivityInfo;
 import android.graphics.Bitmap;
 import android.net.Uri;
@@ -26,16 +27,19 @@ import android.widget.TextView;
 
 public class MainActivity extends Activity {
     private static final String HOME = "https://m.youtube.com";
+    private static final String PREFS = "carview_settings";
 
     private FrameLayout browserHost;
     private WebView web;
     private EditText address;
     private View customView;
     private WebChromeClient.CustomViewCallback customViewCallback;
+    private SharedPreferences prefs;
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
-        startForegroundService(new Intent(this, BrowserKeepAliveService.class));
+        prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        syncBackgroundService();
 
         boolean preview = getIntent().getBooleanExtra("car_preview", false);
         if (preview) {
@@ -46,7 +50,27 @@ public class MainActivity extends Activity {
                     View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
         }
         build(preview);
-        web.loadUrl(HOME);
+
+        String startUrl = HOME;
+        if (prefs.getBoolean("auto_resume", true)) {
+            String saved = prefs.getString("last_url", HOME);
+            if (saved != null && !saved.isEmpty()) startUrl = saved;
+        }
+        web.loadUrl(startUrl);
+    }
+
+    @Override protected void onResume() {
+        super.onResume();
+        if (prefs != null) syncBackgroundService();
+    }
+
+    private void syncBackgroundService() {
+        Intent svc = new Intent(this, BrowserKeepAliveService.class);
+        if (prefs.getBoolean("background_playback", true)) {
+            startForegroundService(svc);
+        } else {
+            stopService(svc);
+        }
     }
 
     private void build(boolean preview) {
@@ -58,10 +82,10 @@ public class MainActivity extends Activity {
         page.setPadding(Ui.dp(this, preview ? 8 : 16), Ui.dp(this, 8), Ui.dp(this, preview ? 8 : 16), Ui.dp(this, 8));
         root.addView(page, new FrameLayout.LayoutParams(-1, -1));
 
-        TextView title = Ui.text(this, preview ? "MyCar View AA  •  CAR PREVIEW" : "MyCar View AA", preview ? 17 : 28, Ui.TEXT, true);
+        TextView title = Ui.text(this, preview ? "CarView AA  •  CAR PREVIEW" : "CarView AA", preview ? 17 : 28, Ui.TEXT, true);
         page.addView(title, new LinearLayout.LayoutParams(-1, Ui.dp(this, preview ? 36 : 64)));
 
-        if (preview) {
+        if (preview && prefs.getBoolean("bubble_enabled", false)) {
             page.addView(buildVietMapWidget(), new LinearLayout.LayoutParams(-1, Ui.dp(this, 112)));
         }
 
@@ -136,10 +160,14 @@ public class MainActivity extends Activity {
         data.setGravity(Gravity.CENTER_VERTICAL);
         card.addView(data, new LinearLayout.LayoutParams(-1, 0, 1));
 
-        data.addView(speedTile("80", "GIỚI HẠN", true), new LinearLayout.LayoutParams(0, -1, 1));
-        data.addView(speedTile("0", "km/h", false), new LinearLayout.LayoutParams(0, -1, 1));
-        data.addView(speedTile("📷", "269m", true), new LinearLayout.LayoutParams(0, -1, 1));
-        data.addView(speedTile("50", "67m", true), new LinearLayout.LayoutParams(0, -1, 1));
+        String limit = prefs.getString("limit", "80");
+        String speed = prefs.getString("speed", "0");
+        data.addView(speedTile(limit, "GIỚI HẠN", true), new LinearLayout.LayoutParams(0, -1, 1));
+        data.addView(speedTile(speed, "km/h", false), new LinearLayout.LayoutParams(0, -1, 1));
+        if (prefs.getBoolean("bubble_camera_zone", true)) {
+            data.addView(speedTile("📷", "camera", true), new LinearLayout.LayoutParams(0, -1, 1));
+            data.addView(speedTile("50", "khu dân cư", true), new LinearLayout.LayoutParams(0, -1, 1));
+        }
         return card;
     }
 
@@ -198,12 +226,21 @@ public class MainActivity extends Activity {
             }
 
             @Override public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
-                WebResourceResponse blocked = AdBlocker.intercept(request.getUrl().toString());
-                return blocked != null ? blocked : super.shouldInterceptRequest(view, request);
+                if (prefs.getBoolean("ad_filter", true)) {
+                    WebResourceResponse blocked = AdBlocker.intercept(request.getUrl().toString());
+                    if (blocked != null) return blocked;
+                }
+                return super.shouldInterceptRequest(view, request);
             }
 
             @Override public void onPageStarted(WebView view, String url, Bitmap favicon) {
                 if (address != null) address.setText(url);
+            }
+
+            @Override public void onPageFinished(WebView view, String url) {
+                if (url != null && (url.startsWith("http://") || url.startsWith("https://"))) {
+                    prefs.edit().putString("last_url", url).apply();
+                }
             }
         });
 
