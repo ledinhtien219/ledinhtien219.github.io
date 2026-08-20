@@ -25,6 +25,13 @@
         android:theme="@android:style/Theme.Material.NoActionBar"
         android:usesCleartextTraffic="false">
 
+        <meta-data
+            android:name="com.google.android.gms.car.application"
+            android:resource="@xml/automotive_app_desc" />
+        <meta-data
+            android:name="androidx.car.app.minCarApiLevel"
+            android:value="1" />
+
         <activity
             android:name=".SettingsActivity"
             android:screenOrientation="portrait"
@@ -41,8 +48,17 @@
             </intent-filter>
         </activity>
 
-        <!-- CarHUD no longer registers a CarAppService. The product is now the
-             overlay itself, shown above Maps/Waze/VIETMAP on compatible setups. -->
+        <service
+            android:name=".CarViewCarAppService"
+            android:label="CarHUD"
+            android:icon="@android:drawable/ic_menu_mapmode"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="androidx.car.app.CarAppService" />
+                <category android:name="androidx.car.app.category.POI" />
+            </intent-filter>
+        </service>
+
         <service
             android:name=".BrowserKeepAliveService"
             android:exported="false"
