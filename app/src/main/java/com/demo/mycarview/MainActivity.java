@@ -202,8 +202,8 @@ public class MainActivity extends Activity {
                             prefs.edit().putBoolean("car_bubble_expanded", nowExpanded).apply();
                             renderCarBubble(bubble, nowExpanded);
                             p.width = nowExpanded ? expandedWidth : compact;
-                            int maxX = Math.max(0, root.getWidth() - p.width);
-                            p.leftMargin = Math.min(p.leftMargin, maxX);
+                            int maxExpandedX = Math.max(0, root.getWidth() - p.width);
+                            p.leftMargin = Math.min(p.leftMargin, maxExpandedX);
                             bubble.setLayoutParams(p);
                         }
                         return true;
