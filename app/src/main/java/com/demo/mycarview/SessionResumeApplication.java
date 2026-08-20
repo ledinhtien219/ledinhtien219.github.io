@@ -297,6 +297,28 @@ public class SessionResumeApplication extends Application implements Application
         WebView web = findWebView(activity);
         if (web == null) return;
 
+        // Never resize generic YouTube player shells on Home/search pages. The
+        // old code forced ytm-player to height:100% + black background, which
+        // could become a full-page black overlay even when no video was open.
+        if (!isVideoUrl(web.getUrl())) {
+            String cleanup = "(function(){" +
+                    "var vs=document.querySelectorAll('[data-cv-aspect-video=\\\"1\\\"]');" +
+                    "for(var i=0;i<vs.length;i++){var v=vs[i];" +
+                    "v.style.removeProperty('object-fit');v.style.removeProperty('width');v.style.removeProperty('height');" +
+                    "v.style.removeProperty('max-width');v.style.removeProperty('max-height');v.removeAttribute('data-cv-aspect-video');}" +
+                    "var cs=document.querySelectorAll('[data-cv-aspect-container=\\\"1\\\"]');" +
+                    "for(var j=0;j<cs.length;j++){var c=cs[j];" +
+                    "c.style.removeProperty('width');c.style.removeProperty('height');c.style.removeProperty('overflow');" +
+                    "c.style.removeProperty('background');c.removeAttribute('data-cv-aspect-container');}" +
+                    "return vs.length+cs.length;" +
+                    "})()";
+            try {
+                web.evaluateJavascript(cleanup, null);
+            } catch (Throwable ignored) {
+            }
+            return;
+        }
+
         SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         String mode = prefs.getString("video_aspect_mode", "contain");
         if (!"contain".equals(mode) && !"cover".equals(mode) && !"fill".equals(mode)) {
@@ -306,20 +328,19 @@ public class SessionResumeApplication extends Application implements Application
         String js = "(function(){" +
                 "var m='" + mode + "';" +
                 "var vs=document.querySelectorAll('video');" +
+                "if(!vs.length)return 0;" +
                 "for(var i=0;i<vs.length;i++){" +
-                "var v=vs[i];" +
+                "var v=vs[i];v.setAttribute('data-cv-aspect-video','1');" +
                 "v.style.setProperty('object-fit',m,'important');" +
                 "v.style.setProperty('width','100%','important');" +
                 "v.style.setProperty('height','100%','important');" +
                 "v.style.setProperty('max-width','none','important');" +
                 "v.style.setProperty('max-height','none','important');" +
-                "}" +
-                "var cs=document.querySelectorAll('.html5-video-container,.html5-video-player,.player-container,ytm-player');" +
-                "for(var j=0;j<cs.length;j++){" +
-                "cs[j].style.setProperty('width','100%','important');" +
-                "cs[j].style.setProperty('height','100%','important');" +
-                "cs[j].style.setProperty('overflow','hidden','important');" +
-                "cs[j].style.setProperty('background','#000','important');" +
+                "var c=v.closest('.html5-video-container,.html5-video-player,.player-container,ytm-player');" +
+                "if(c){c.setAttribute('data-cv-aspect-container','1');" +
+                "c.style.setProperty('width','100%','important');" +
+                "c.style.setProperty('height','100%','important');" +
+                "c.style.setProperty('overflow','hidden','important');}" +
                 "}" +
                 "return vs.length;" +
                 "})()";
