@@ -1,0 +1,41 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.demo.mycarview'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'com.demo.mycarview'
+        minSdk 26
+        targetSdk 35
+        versionCode 30
+        versionName '0.8.3'
+    }
+
+    buildTypes {
+        debug {
+            minifyEnabled false
+        }
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt')
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    implementation 'androidx.car.app:app:1.4.0'
+    implementation 'androidx.car.app:app-projected:1.4.0'
+
+    // Official VietMap tracking / speed-alert SDK used by VietMap's public
+    // navigation integration. CarHUD loads it through a guarded bridge so the
+    // HUD still works in GPS/Maps-API mode when alert credentials are absent.
+    implementation 'com.github.vietmap-company:vietmap-tracking-sdk-android:1.2.3'
+}
