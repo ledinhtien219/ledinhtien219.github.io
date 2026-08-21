@@ -10,8 +10,8 @@ android {
         applicationId 'com.demo.mycarview'
         minSdk 26
         targetSdk 35
-        versionCode 28
-        versionName '0.8.1'
+        versionCode 29
+        versionName '0.8.2'
     }
 
     buildTypes {
@@ -31,7 +31,11 @@ android {
 }
 
 dependencies {
-    // 1.4.0 keeps the mature protocol surface used by the compatibility entry.
     implementation 'androidx.car.app:app:1.4.0'
     implementation 'androidx.car.app:app-projected:1.4.0'
+
+    // Official VietMap tracking / speed-alert SDK used by VietMap's public
+    // navigation integration. CarHUD loads it through a guarded bridge so the
+    // HUD still works in GPS/Maps-API mode when alert credentials are absent.
+    implementation 'com.github.vietmap-company:vietmap-tracking-sdk-android:1.2.3'
 }
