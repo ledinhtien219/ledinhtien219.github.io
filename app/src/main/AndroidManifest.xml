@@ -1,26 +1,25 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
-    <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="androidx.car.app.MAP_TEMPLATES" />
 
     <queries>
+        <package android:name="com.google.android.apps.maps" />
+        <package android:name="com.waze" />
         <package android:name="vn.vietmap.live" />
         <package android:name="vn.vietmap.live.v2" />
-        <package android:name="com.waze" />
     </queries>
 
     <application
-        android:name=".SessionResumeApplication"
+        android:name=".CarHudApplication"
         android:allowBackup="true"
-        android:icon="@android:drawable/ic_menu_mapmode"
+        android:icon="@drawable/ic_carhud"
         android:label="CarHUD"
         android:theme="@android:style/Theme.Material.NoActionBar"
         android:usesCleartextTraffic="false">
@@ -33,27 +32,9 @@
             android:value="1" />
 
         <activity
-            android:name=".SettingsActivity"
-            android:screenOrientation="portrait"
-            android:exported="false" />
-
-        <activity
-            android:name=".OverlayLauncherActivity"
-            android:label="CarHUD Overlay"
-            android:icon="@android:drawable/ic_menu_mylocation"
-            android:exported="true"
-            android:excludeFromRecents="true">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity>
-
-        <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:supportsPictureInPicture="true"
-            android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation">
+            android:screenOrientation="portrait">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -63,7 +44,7 @@
         <service
             android:name=".CarViewCarAppService"
             android:label="CarHUD"
-            android:icon="@android:drawable/ic_menu_mapmode"
+            android:icon="@drawable/ic_carhud"
             android:exported="true">
             <intent-filter>
                 <action android:name="androidx.car.app.CarAppService" />
@@ -72,17 +53,9 @@
         </service>
 
         <service
-            android:name=".BrowserKeepAliveService"
-            android:exported="false"
-            android:foregroundServiceType="mediaPlayback" />
-
-        <service
             android:name=".SpeedBubbleService"
             android:exported="false"
-            android:foregroundServiceType="location|specialUse">
-            <property
-                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="User-enabled draggable floating road HUD with GPS speed" />
-        </service>
+            android:stopWithTask="false"
+            android:foregroundServiceType="location" />
     </application>
 </manifest>
