@@ -17,20 +17,14 @@ import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashSet;
 import java.util.Locale;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicLong;
 
-/**
- * Small connector for VIETMAP's documented Maps API.
- *
- * It deliberately does not inspect the VIETMAP LIVE app or private IPC. The
- * connector verifies the user's Service API key with Reverse v4, records the
- * current VIETMAP road name, and probes Route v4 while the vehicle is moving.
- * If a VIETMAP response exposes speed-limit/camera fields, the parser copies
- * those values into CarHUD's shared model; otherwise the HUD leaves them "--".
- */
+/** Documented VietMap Maps API connector + diagnostics. */
 public final class VietmapApiClient {
     private static final String PREFS = "carview_settings";
     private static final ExecutorService IO = Executors.newSingleThreadExecutor();
@@ -48,6 +42,12 @@ public final class VietmapApiClient {
         Context app = context.getApplicationContext();
         IO.execute(() -> {
             Result r = fetch(app, location, true);
+            // Also configure the dedicated public Speed Alert SDK when the user
+            // has supplied the separate Alert API credentials.
+            if (VietmapSpeedAlertBridge.hasCredentials(app)) {
+                VietmapSpeedAlertBridge.start(app);
+                VietmapSpeedAlertBridge.processLocation(app, location);
+            }
             MAIN.post(() -> {
                 if (callback != null) callback.done(r.ok, r.message, r.road);
             });
@@ -57,6 +57,12 @@ public final class VietmapApiClient {
     public static void maybeUpdate(Context context, Location location) {
         if (context == null || location == null) return;
         Context app = context.getApplicationContext();
+
+        // Speed Alert wants the actual GPS cadence. It has its own internal
+        // network/cache policy, so don't put this behind the 20-second Maps API
+        // throttle used for reverse/route calls.
+        VietmapSpeedAlertBridge.processLocation(app, location);
+
         SharedPreferences p = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         if (!"vietmap_api".equals(p.getString("speed_source", "gps"))) return;
         String key = p.getString("vietmap_api_key", "");
@@ -75,8 +81,12 @@ public final class VietmapApiClient {
         SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         String key = prefs.getString("vietmap_api_key", "");
         if (key == null || key.trim().isEmpty()) {
-            setStatus(prefs, "Chưa có API key", null);
-            return new Result(false, "Chưa có VIETMAP API key", "");
+            setMapsStatus(prefs, "Chưa có Service API key", null);
+            return new Result(false, "Chưa có VIETMAP Service API key", "");
+        }
+        if (location == null) {
+            setMapsStatus(prefs, "Chưa có GPS", null);
+            return new Result(false, "Chưa có vị trí GPS", "");
         }
 
         try {
@@ -92,17 +102,20 @@ public final class VietmapApiClient {
             String road = firstNonEmpty(
                     findString(reverseJson, "street", 0),
                     findString(reverseJson, "name", 0),
-                    findString(reverseJson, "display", 0));
+                    findString(reverseJson, "display", 0),
+                    findString(reverseJson, "address", 0));
             if (road == null) road = "";
 
             SharedPreferences.Editor edit = prefs.edit()
-                    .putString("vietmap_status", "Đã kết nối")
+                    .putString("vietmap_status", "Đã kết nối") // backward compatible UI key
+                    .putString("vietmap_maps_status", "Đã kết nối")
                     .putString("vietmap_road", road)
-                    .putLong("vietmap_last_update_ms", System.currentTimeMillis());
+                    .putLong("vietmap_last_update_ms", System.currentTimeMillis())
+                    .remove("vietmap_maps_error");
 
-            // Some service plans can return additional navigation metadata. We
-            // only consume clearly named fields when present; missing fields are
-            // not invented.
+            // Reverse v4 normally returns geocoding data only. Keep this parser
+            // opportunistic for plans that add navigation metadata, but never
+            // invent a value when the field is absent.
             Integer reverseLimit = findIntByKeys(reverseJson, 0,
                     "speed_limit", "speedLimit", "max_speed", "maxSpeed", "speed_limit_kmh");
             if (isValidLimit(reverseLimit)) edit.putString("limit", String.valueOf(reverseLimit));
@@ -113,35 +126,40 @@ public final class VietmapApiClient {
                 probeRoute(prefs, key.trim(), location);
             }
 
-            return new Result(true, "VIETMAP API đã kết nối", road);
+            return new Result(true, "VIETMAP Maps API đã kết nối", road);
         } catch (HttpError e) {
             String msg = "HTTP " + e.code;
-            setStatus(prefs, msg, e.getMessage());
+            setMapsStatus(prefs, msg, e.getMessage());
             return new Result(false, "VIETMAP lỗi " + msg, "");
         } catch (Throwable t) {
             String name = t.getClass().getSimpleName();
-            setStatus(prefs, "Lỗi " + name, t.getMessage());
+            setMapsStatus(prefs, "Lỗi " + name, t.getMessage());
             return new Result(false, "Không kết nối được VIETMAP: " + name, "");
         }
     }
 
+    /** Probe public Route v4 and record exactly what alert-like fields it exposes. */
     private static void probeRoute(SharedPreferences prefs, String key, Location location) {
         try {
             float bearing = location.hasBearing() ? location.getBearing() : 0f;
-            double[] ahead = project(location.getLatitude(), location.getLongitude(), bearing, 1200.0);
+            double[] ahead = project(location.getLatitude(), location.getLongitude(), bearing, 1500.0);
             Uri route = Uri.parse("https://maps.vietmap.vn/api/route/v4").buildUpon()
                     .appendQueryParameter("apikey", key)
-                    .appendQueryParameter("point", String.format(Locale.US, "%.7f,%.7f", location.getLatitude(), location.getLongitude()))
+                    .appendQueryParameter("point", String.format(Locale.US, "%.7f,%.7f",
+                            location.getLatitude(), location.getLongitude()))
                     .appendQueryParameter("point", String.format(Locale.US, "%.7f,%.7f", ahead[0], ahead[1]))
                     .appendQueryParameter("vehicle", "car")
-                    .appendQueryParameter("heading", String.format(Locale.US, "%.0f", bearing))
                     .appendQueryParameter("points_encoded", "false")
+                    .appendQueryParameter("annotations", "congestion,congestion_distance,toll")
                     .build();
 
             String body = get(route.toString());
             Object root = new JSONTokener(body).nextValue();
             String code = findString(root, "code", 0);
-            if (code != null && !"OK".equalsIgnoreCase(code)) return;
+            if (code != null && !"OK".equalsIgnoreCase(code)) {
+                prefs.edit().putString("vietmap_route_status", "Route v4: " + code).apply();
+                return;
+            }
 
             SharedPreferences.Editor e = prefs.edit();
             Integer limit = findIntByKeys(root, 0,
@@ -149,22 +167,74 @@ public final class VietmapApiClient {
             Integer nextLimit = findIntByKeys(root, 0,
                     "next_speed_limit", "nextSpeedLimit", "next_limit", "nextLimit");
             Integer nextDistance = findIntByKeys(root, 0,
-                    "next_speed_limit_distance", "nextLimitDistance", "next_limit_distance_m");
+                    "next_speed_limit_distance", "nextSpeedLimitDistance",
+                    "nextLimitDistance", "next_limit_distance_m");
             Integer cameraDistance = findIntByKeys(root, 0,
-                    "camera_distance", "cameraDistance", "distance_to_camera", "camera_distance_m");
+                    "camera_distance", "cameraDistance", "distance_to_camera",
+                    "distanceToCamera", "camera_distance_m");
 
-            if (isValidLimit(limit)) e.putString("limit", String.valueOf(limit));
-            if (isValidLimit(nextLimit)) e.putString("next_limit", String.valueOf(nextLimit));
-            if (isValidDistance(nextDistance)) e.putInt("next_limit_distance_m", nextDistance);
-            if (isValidDistance(cameraDistance)) e.putInt("camera_distance_m", cameraDistance);
+            boolean hasAlertData = false;
+            if (isValidLimit(limit)) {
+                e.putString("limit", String.valueOf(limit));
+                hasAlertData = true;
+            }
+            if (isValidLimit(nextLimit)) {
+                e.putString("next_limit", String.valueOf(nextLimit));
+                hasAlertData = true;
+            }
+            if (isValidDistance(nextDistance)) {
+                e.putInt("next_limit_distance_m", nextDistance);
+                hasAlertData = true;
+            }
+            if (isValidDistance(cameraDistance)) {
+                e.putInt("camera_distance_m", cameraDistance);
+                hasAlertData = true;
+            }
 
             String street = firstInstructionStreet(root);
             if (street != null && !street.isEmpty()) e.putString("vietmap_route_road", street);
-            e.putLong("vietmap_route_update_ms", System.currentTimeMillis()).apply();
-        } catch (Throwable ignored) {
-            // Reverse v4 connection remains valid even if a route probe is not
-            // available for the current plan/location.
+
+            Set<String> interesting = new LinkedHashSet<>();
+            collectInterestingKeys(root, "", interesting, 0);
+            String keys = join(interesting, 500);
+            e.putString("vietmap_route_keys", keys)
+                    .putString("vietmap_route_status", hasAlertData
+                            ? "Route v4: có dữ liệu cảnh báo"
+                            : "Route v4: OK · không có trường speed-limit/camera")
+                    .putLong("vietmap_route_update_ms", System.currentTimeMillis())
+                    .apply();
+        } catch (HttpError e) {
+            prefs.edit().putString("vietmap_route_status", "Route v4 HTTP " + e.code).apply();
+        } catch (Throwable t) {
+            prefs.edit().putString("vietmap_route_status",
+                    "Route v4 lỗi " + t.getClass().getSimpleName()).apply();
         }
+    }
+
+    private static void collectInterestingKeys(Object node, String path, Set<String> out, int depth) {
+        if (node == null || depth > 7 || out.size() > 80) return;
+        try {
+            if (node instanceof JSONObject) {
+                JSONObject o = (JSONObject) node;
+                JSONArray names = o.names();
+                if (names == null) return;
+                for (int i = 0; i < names.length(); i++) {
+                    String key = names.optString(i);
+                    String full = path.isEmpty() ? key : path + "." + key;
+                    String k = key.toLowerCase(Locale.US);
+                    if (k.contains("speed") || k.contains("limit") || k.contains("camera")
+                            || k.contains("alert") || k.contains("warning") || k.contains("sign")
+                            || k.contains("toll") || k.contains("annotation")) {
+                        out.add(full);
+                    }
+                    collectInterestingKeys(o.opt(key), full, out, depth + 1);
+                }
+            } else if (node instanceof JSONArray) {
+                JSONArray a = (JSONArray) node;
+                int max = Math.min(a.length(), 5);
+                for (int i = 0; i < max; i++) collectInterestingKeys(a.opt(i), path + "[]", out, depth + 1);
+            }
+        } catch (Throwable ignored) {}
     }
 
     private static String firstInstructionStreet(Object root) {
@@ -172,8 +242,10 @@ public final class VietmapApiClient {
             if (!(root instanceof JSONObject)) return null;
             JSONArray paths = ((JSONObject) root).optJSONArray("paths");
             if (paths == null || paths.length() == 0) return null;
-            JSONArray instructions = paths.optJSONObject(0).optJSONArray("instructions");
-            if (instructions == null || instructions.length() == 0) return null;
+            JSONObject first = paths.optJSONObject(0);
+            if (first == null) return null;
+            JSONArray instructions = first.optJSONArray("instructions");
+            if (instructions == null) return null;
             for (int i = 0; i < instructions.length(); i++) {
                 JSONObject o = instructions.optJSONObject(i);
                 if (o == null) continue;
@@ -186,11 +258,11 @@ public final class VietmapApiClient {
 
     private static String get(String url) throws Exception {
         HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
-        c.setConnectTimeout(6000);
-        c.setReadTimeout(7000);
+        c.setConnectTimeout(6500);
+        c.setReadTimeout(8000);
         c.setRequestMethod("GET");
         c.setRequestProperty("Accept", "application/json");
-        c.setRequestProperty("User-Agent", "CarHUD/0.8.1");
+        c.setRequestProperty("User-Agent", "CarHUD/0.8.2");
         int code = c.getResponseCode();
         InputStream in = code >= 200 && code < 300 ? c.getInputStream() : c.getErrorStream();
         String body = read(in);
@@ -210,10 +282,12 @@ public final class VietmapApiClient {
         return sb.toString();
     }
 
-    private static void setStatus(SharedPreferences prefs, String status, String error) {
-        SharedPreferences.Editor e = prefs.edit().putString("vietmap_status", status);
-        if (error == null) e.remove("vietmap_last_error");
-        else e.putString("vietmap_last_error", error.length() > 240 ? error.substring(0, 240) : error);
+    private static void setMapsStatus(SharedPreferences prefs, String status, String error) {
+        SharedPreferences.Editor e = prefs.edit()
+                .putString("vietmap_status", status)
+                .putString("vietmap_maps_status", status);
+        if (error == null) e.remove("vietmap_maps_error");
+        else e.putString("vietmap_maps_error", trim(error, 300));
         e.apply();
     }
 
@@ -229,8 +303,7 @@ public final class VietmapApiClient {
                 JSONArray names = o.names();
                 if (names != null) {
                     for (int i = 0; i < names.length(); i++) {
-                        Object child = o.opt(names.optString(i));
-                        String found = findString(child, key, depth + 1);
+                        String found = findString(o.opt(names.optString(i)), key, depth + 1);
                         if (found != null) return found;
                     }
                 }
@@ -252,8 +325,7 @@ public final class VietmapApiClient {
                 JSONObject o = (JSONObject) node;
                 for (String key : keys) {
                     if (!o.has(key)) continue;
-                    Object v = o.opt(key);
-                    Integer parsed = toInt(v);
+                    Integer parsed = toInt(o.opt(key));
                     if (parsed != null) return parsed;
                 }
                 JSONArray names = o.names();
@@ -293,6 +365,21 @@ public final class VietmapApiClient {
         return null;
     }
 
+    private static String join(Set<String> values, int maxLen) {
+        StringBuilder sb = new StringBuilder();
+        for (String s : values) {
+            if (sb.length() > 0) sb.append(", ");
+            if (sb.length() + s.length() > maxLen) break;
+            sb.append(s);
+        }
+        return sb.toString();
+    }
+
+    private static String trim(String s, int max) {
+        if (s == null) return "";
+        return s.length() <= max ? s : s.substring(0, max);
+    }
+
     private static double[] project(double latDeg, double lonDeg, double bearingDeg, double meters) {
         double r = 6378137.0;
         double brng = Math.toRadians(bearingDeg);
@@ -320,7 +407,7 @@ public final class VietmapApiClient {
     private static final class HttpError extends Exception {
         final int code;
         HttpError(int code, String body) {
-            super(body == null ? "" : body);
+            super(body == null ? "" : trim(body, 500));
             this.code = code;
         }
     }
