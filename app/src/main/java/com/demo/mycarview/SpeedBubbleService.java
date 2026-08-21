@@ -32,14 +32,14 @@ import android.widget.TextView;
 import java.util.Collections;
 import java.util.Map;
 
-/** Stable draggable GPS/VIETMAP HUD overlay for phone and Android head units. */
+/** Stable draggable CarHUD overlay with GPS + official VietMap connector feed. */
 public class SpeedBubbleService extends Service {
     private static final String PREFS = "carview_settings";
     private static final String CHANNEL_ID = "carhud_location";
     private static final int NOTIFICATION_ID = 1101;
 
     private SharedPreferences prefs;
-    private WindowManager windowManager;
+    private WindowManager wm;
     private View hud;
     private WindowManager.LayoutParams params;
 
@@ -47,7 +47,6 @@ public class SpeedBubbleService extends Service {
     private TextView limitView;
     private TextView nextLimitView;
     private TextView nextDistanceView;
-    private TextView cameraView;
     private TextView cameraDistanceView;
     private TextView sourceView;
     private View limitTile;
@@ -61,12 +60,19 @@ public class SpeedBubbleService extends Service {
     private boolean cameraAlerted;
     private boolean rebuilding;
 
-    private final SharedPreferences.OnSharedPreferenceChangeListener prefListener = (sharedPreferences, key) -> {
+    private final SharedPreferences.OnSharedPreferenceChangeListener prefListener = (p, key) -> {
         if (rebuilding) return;
         if ("hud_style".equals(key) || "bubble_scale".equals(key)
                 || "show_limit".equals(key) || "show_next_limit".equals(key)
                 || "show_camera".equals(key)) {
             rebuildHud();
+        } else if ("speed_source".equals(key)) {
+            if ("vietmap_api".equals(readString("speed_source", "gps"))) {
+                VietmapSpeedAlertBridge.start(this);
+            } else {
+                VietmapSpeedAlertBridge.stop(this);
+            }
+            refreshHud();
         } else {
             refreshHud();
         }
@@ -79,15 +85,14 @@ public class SpeedBubbleService extends Service {
             disableAndStop();
             return;
         }
-        if (!startForegroundSafely()) {
+        if (!startForegroundSafely() || !showHudSafely()) {
             disableAndStop();
             return;
         }
-        if (!showHudSafely()) {
-            disableAndStop();
-            return;
+        try { prefs.registerOnSharedPreferenceChangeListener(prefListener); } catch (Throwable ignored) {}
+        if ("vietmap_api".equals(readString("speed_source", "gps"))) {
+            VietmapSpeedAlertBridge.start(this);
         }
-        prefs.registerOnSharedPreferenceChangeListener(prefListener);
         startGps();
         refreshHud();
     }
@@ -104,15 +109,14 @@ public class SpeedBubbleService extends Service {
     private boolean startForegroundSafely() {
         try {
             NotificationManager nm = getSystemService(NotificationManager.class);
-            if (nm != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                NotificationChannel channel = new NotificationChannel(
+            if (nm != null && Build.VERSION.SDK_INT >= 26) {
+                NotificationChannel c = new NotificationChannel(
                         CHANNEL_ID, "CarHUD GPS", NotificationManager.IMPORTANCE_LOW);
-                channel.setDescription("GPS + VIETMAP road HUD");
-                nm.createNotificationChannel(channel);
+                c.setDescription("GPS + VIETMAP road HUD");
+                nm.createNotificationChannel(c);
             }
-            Notification.Builder b = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
-                    ? new Notification.Builder(this, CHANNEL_ID)
-                    : new Notification.Builder(this);
+            Notification.Builder b = Build.VERSION.SDK_INT >= 26
+                    ? new Notification.Builder(this, CHANNEL_ID) : new Notification.Builder(this);
             Notification n = b.setContentTitle("CarHUD")
                     .setContentText("HUD đang hoạt động")
                     .setSmallIcon(R.drawable.ic_carhud)
@@ -131,20 +135,17 @@ public class SpeedBubbleService extends Service {
         rebuilding = true;
         try {
             safeRemoveHud();
-            clearViewRefs();
+            clearRefs();
             showHudSafely();
             refreshHud();
-        } finally {
-            rebuilding = false;
-        }
+        } finally { rebuilding = false; }
     }
 
     private boolean showHudSafely() {
         try {
-            windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
-            if (windowManager == null) return false;
-
-            int scalePct = clamp(readInt("bubble_scale", 90), 60, 150);
+            wm = (WindowManager) getSystemService(WINDOW_SERVICE);
+            if (wm == null) return false;
+            int scalePct = clamp(readInt("bubble_scale", 80), 60, 150);
             float scale = scalePct / 100f;
             String style = readString("hud_style", "neon");
 
@@ -153,31 +154,24 @@ public class SpeedBubbleService extends Service {
             int widthDp;
             int heightDp;
             if ("vertical".equals(style)) {
-                content = buildVertical(scale);
-                widthDp = Math.round(112 * scale);
-                heightDp = Math.round(270 * scale);
+                content = buildVertical(scale); widthDp = Math.round(110 * scale); heightDp = Math.round(258 * scale);
             } else if ("compact".equals(style)) {
-                content = buildCompact(scale);
-                widthDp = Math.round(350 * scale);
-                heightDp = Math.round(98 * scale);
+                content = buildCompact(scale); widthDp = Math.round(344 * scale); heightDp = Math.round(94 * scale);
             } else {
-                content = buildNeon(scale);
-                widthDp = Math.round(390 * scale);
-                heightDp = Math.round(124 * scale);
+                content = buildNeon(scale); widthDp = Math.round(382 * scale); heightDp = Math.round(118 * scale);
             }
             wrapper.addView(content, new FrameLayout.LayoutParams(-1, -1));
             hud = wrapper;
 
             params = new WindowManager.LayoutParams(
-                    dp(widthDp), dp(heightDp),
-                    WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                    dp(widthDp), dp(heightDp), WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
                     WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
                             | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
                             | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
                     PixelFormat.TRANSLUCENT);
             params.gravity = Gravity.TOP | Gravity.START;
-            params.x = readInt("bubble_x", dp(18));
-            params.y = readInt("bubble_y", dp(82));
+            params.x = readInt("bubble_x", dp(16));
+            params.y = readInt("bubble_y", dp(76));
             clampPosition();
 
             wrapper.setOnTouchListener(new View.OnTouchListener() {
@@ -194,20 +188,18 @@ public class SpeedBubbleService extends Service {
                             params.x = startX + Math.round(event.getRawX() - downX);
                             params.y = startY + Math.round(event.getRawY() - downY);
                             clampPosition();
-                            try { if (windowManager != null && hud != null) windowManager.updateViewLayout(hud, params); }
+                            try { if (wm != null && hud != null) wm.updateViewLayout(hud, params); }
                             catch (Throwable ignored) {}
                             return true;
                         case MotionEvent.ACTION_UP:
                         case MotionEvent.ACTION_CANCEL:
-                            try { prefs.edit().putInt("bubble_x", params.x).putInt("bubble_y", params.y).apply(); }
-                            catch (Throwable ignored) {}
+                            prefs.edit().putInt("bubble_x", params.x).putInt("bubble_y", params.y).apply();
                             return true;
                         default: return false;
                     }
                 }
             });
-
-            windowManager.addView(wrapper, params);
+            wm.addView(wrapper, params);
             return true;
         } catch (Throwable ignored) {
             safeRemoveHud();
@@ -219,148 +211,106 @@ public class SpeedBubbleService extends Service {
         LinearLayout outer = panel();
         outer.setOrientation(LinearLayout.HORIZONTAL);
         outer.setGravity(Gravity.CENTER_VERTICAL);
-        outer.setPadding(dp(8 * scale), dp(6 * scale), dp(8 * scale), dp(6 * scale));
+        outer.setPadding(dp(7 * scale), dp(5 * scale), dp(7 * scale), dp(5 * scale));
 
         LinearLayout speed = column();
-        speedView = label("--", 26 * scale, Ui.TEXT, true);
+        speedView = label("--", 25 * scale, Ui.TEXT, true);
         speedView.setGravity(Gravity.CENTER);
-        TextView unit = label("km/h", 8 * scale, Ui.MUTED, false);
-        unit.setGravity(Gravity.CENTER);
+        TextView unit = label("km/h", 7 * scale, Ui.MUTED, false); unit.setGravity(Gravity.CENTER);
         speed.addView(speedView, new LinearLayout.LayoutParams(-1, 0, 2));
         speed.addView(unit, new LinearLayout.LayoutParams(-1, 0, 1));
         outer.addView(speed, weighted());
-
-        limitTile = signColumn(false, scale);
-        outer.addView(limitTile, weighted());
-        cameraTile = cameraColumn(scale);
-        outer.addView(cameraTile, weighted());
-        nextTile = signColumn(true, scale);
-        outer.addView(nextTile, weighted());
+        limitTile = signColumn(false, scale); outer.addView(limitTile, weighted());
+        cameraTile = cameraColumn(scale); outer.addView(cameraTile, weighted());
+        nextTile = signColumn(true, scale); outer.addView(nextTile, weighted());
         return outer;
     }
 
     private View buildNeon(float scale) {
         LinearLayout outer = panel();
         outer.setOrientation(LinearLayout.VERTICAL);
-        outer.setPadding(dp(7 * scale), dp(4 * scale), dp(7 * scale), dp(6 * scale));
-
-        sourceView = label(sourceLabel(), 8 * scale, Ui.MUTED, true);
+        outer.setPadding(dp(6 * scale), dp(3 * scale), dp(6 * scale), dp(5 * scale));
+        sourceView = label(sourceLabel(), 7.5f * scale, Ui.MUTED, true);
         sourceView.setGravity(Gravity.CENTER_VERTICAL);
-        outer.addView(sourceView, new LinearLayout.LayoutParams(-1, dp(20 * scale)));
+        outer.addView(sourceView, new LinearLayout.LayoutParams(-1, dp(18 * scale)));
 
         LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER);
+        row.setOrientation(LinearLayout.HORIZONTAL); row.setGravity(Gravity.CENTER);
         outer.addView(row, new LinearLayout.LayoutParams(-1, 0, 1));
-
-        limitTile = signColumn(false, scale);
-        row.addView(limitTile, weighted());
+        limitTile = signColumn(false, scale); row.addView(limitTile, weighted());
 
         LinearLayout center = column();
         LinearLayout neon = new LinearLayout(this);
-        neon.setOrientation(LinearLayout.VERTICAL);
-        neon.setGravity(Gravity.CENTER);
+        neon.setOrientation(LinearLayout.VERTICAL); neon.setGravity(Gravity.CENTER);
         neon.setBackground(circle(0xFF0A151F, 0xFF32E1C4, 2));
-        speedView = label("--", 26 * scale, 0xFFFFFFFF, true);
-        speedView.setGravity(Gravity.CENTER);
-        TextView unit = label("KM/H", 7 * scale, 0xFF32E1C4, true);
-        unit.setGravity(Gravity.CENTER);
+        speedView = label("--", 25 * scale, Color.WHITE, true); speedView.setGravity(Gravity.CENTER);
+        TextView unit = label("KM/H", 7 * scale, 0xFF32E1C4, true); unit.setGravity(Gravity.CENTER);
         neon.addView(speedView, new LinearLayout.LayoutParams(-1, 0, 2));
         neon.addView(unit, new LinearLayout.LayoutParams(-1, 0, 1));
-        int circle = dp(70 * scale);
-        center.addView(neon, new LinearLayout.LayoutParams(circle, circle));
+        int s = dp(67 * scale);
+        center.addView(neon, new LinearLayout.LayoutParams(s, s));
         row.addView(center, weighted());
-
-        cameraTile = cameraColumn(scale);
-        row.addView(cameraTile, weighted());
-        nextTile = signColumn(true, scale);
-        row.addView(nextTile, weighted());
+        cameraTile = cameraColumn(scale); row.addView(cameraTile, weighted());
+        nextTile = signColumn(true, scale); row.addView(nextTile, weighted());
         return outer;
     }
 
     private View buildVertical(float scale) {
         LinearLayout outer = panel();
-        outer.setOrientation(LinearLayout.VERTICAL);
-        outer.setGravity(Gravity.CENTER_HORIZONTAL);
-        outer.setPadding(dp(7 * scale), dp(7 * scale), dp(7 * scale), dp(7 * scale));
-
-        sourceView = label(sourceLabel(), 7 * scale, Ui.MUTED, true);
-        sourceView.setGravity(Gravity.CENTER);
-        outer.addView(sourceView, new LinearLayout.LayoutParams(-1, dp(20 * scale)));
-        speedView = label("--", 24 * scale, 0xFF32E1C4, true);
-        speedView.setGravity(Gravity.CENTER);
-        outer.addView(speedView, new LinearLayout.LayoutParams(-1, dp(42 * scale)));
-        TextView unit = label("KM/H", 7 * scale, Ui.MUTED, true);
-        unit.setGravity(Gravity.CENTER);
-        outer.addView(unit, new LinearLayout.LayoutParams(-1, dp(16 * scale)));
-
-        limitTile = verticalSign(false, scale);
-        outer.addView(limitTile, new LinearLayout.LayoutParams(-1, dp(64 * scale)));
-        nextTile = verticalSign(true, scale);
-        outer.addView(nextTile, new LinearLayout.LayoutParams(-1, dp(64 * scale)));
-        cameraTile = verticalCamera(scale);
-        outer.addView(cameraTile, new LinearLayout.LayoutParams(-1, dp(48 * scale)));
+        outer.setOrientation(LinearLayout.VERTICAL); outer.setGravity(Gravity.CENTER_HORIZONTAL);
+        outer.setPadding(dp(6 * scale), dp(6 * scale), dp(6 * scale), dp(6 * scale));
+        sourceView = label(sourceLabel(), 6.5f * scale, Ui.MUTED, true); sourceView.setGravity(Gravity.CENTER);
+        outer.addView(sourceView, new LinearLayout.LayoutParams(-1, dp(18 * scale)));
+        speedView = label("--", 23 * scale, 0xFF32E1C4, true); speedView.setGravity(Gravity.CENTER);
+        outer.addView(speedView, new LinearLayout.LayoutParams(-1, dp(39 * scale)));
+        TextView unit = label("KM/H", 6.5f * scale, Ui.MUTED, true); unit.setGravity(Gravity.CENTER);
+        outer.addView(unit, new LinearLayout.LayoutParams(-1, dp(15 * scale)));
+        limitTile = verticalSign(false, scale); outer.addView(limitTile, new LinearLayout.LayoutParams(-1, dp(61 * scale)));
+        nextTile = verticalSign(true, scale); outer.addView(nextTile, new LinearLayout.LayoutParams(-1, dp(61 * scale)));
+        cameraTile = verticalCamera(scale); outer.addView(cameraTile, new LinearLayout.LayoutParams(-1, dp(46 * scale)));
         return outer;
     }
 
     private View signColumn(boolean next, float scale) {
         LinearLayout c = column();
-        TextView sign = label("--", 16 * scale, 0xFF111111, true);
-        sign.setGravity(Gravity.CENTER);
+        TextView sign = label("--", 15 * scale, 0xFF111111, true); sign.setGravity(Gravity.CENTER);
         sign.setBackground(circle(0xFFF9F9F9, 0xFFFF3B30, 3));
-        int s = dp(46 * scale);
-        c.addView(sign, new LinearLayout.LayoutParams(s, s));
-        TextView d = label(next ? "--" : "", 8 * scale, Ui.MUTED, false);
-        d.setGravity(Gravity.CENTER);
-        c.addView(d, new LinearLayout.LayoutParams(-1, dp(17 * scale)));
-        if (next) { nextLimitView = sign; nextDistanceView = d; }
-        else limitView = sign;
+        int s = dp(44 * scale); c.addView(sign, new LinearLayout.LayoutParams(s, s));
+        TextView d = label(next ? "--" : "", 7 * scale, Ui.MUTED, false); d.setGravity(Gravity.CENTER);
+        c.addView(d, new LinearLayout.LayoutParams(-1, dp(16 * scale)));
+        if (next) { nextLimitView = sign; nextDistanceView = d; } else limitView = sign;
         return c;
     }
 
     private View cameraColumn(float scale) {
         LinearLayout c = column();
-        cameraView = label("CAM", 10 * scale, 0xFF111111, true);
-        cameraView.setGravity(Gravity.CENTER);
-        cameraView.setBackground(circle(0xFFFFB000, 0xFFFFB000, 1));
-        int s = dp(46 * scale);
-        c.addView(cameraView, new LinearLayout.LayoutParams(s, s));
-        cameraDistanceView = label("--", 8 * scale, Ui.MUTED, false);
-        cameraDistanceView.setGravity(Gravity.CENTER);
-        c.addView(cameraDistanceView, new LinearLayout.LayoutParams(-1, dp(17 * scale)));
+        TextView cam = label("CAM", 9 * scale, 0xFF111111, true); cam.setGravity(Gravity.CENTER);
+        cam.setBackground(circle(0xFFFFB000, 0xFFFFB000, 1));
+        int s = dp(44 * scale); c.addView(cam, new LinearLayout.LayoutParams(s, s));
+        cameraDistanceView = label("--", 7 * scale, Ui.MUTED, false); cameraDistanceView.setGravity(Gravity.CENTER);
+        c.addView(cameraDistanceView, new LinearLayout.LayoutParams(-1, dp(16 * scale)));
         return c;
     }
 
     private View verticalSign(boolean next, float scale) {
-        LinearLayout row = new LinearLayout(this);
-        row.setGravity(Gravity.CENTER);
-        TextView sign = label("--", 13 * scale, 0xFF111111, true);
-        sign.setGravity(Gravity.CENTER);
+        LinearLayout row = new LinearLayout(this); row.setGravity(Gravity.CENTER);
+        TextView sign = label("--", 12 * scale, 0xFF111111, true); sign.setGravity(Gravity.CENTER);
         sign.setBackground(circle(0xFFF9F9F9, 0xFFFF3B30, 3));
-        int s = dp(40 * scale);
-        row.addView(sign, new LinearLayout.LayoutParams(s, s));
-        TextView dist = label(next ? "--" : "", 7 * scale, Ui.MUTED, false);
-        dist.setGravity(Gravity.CENTER);
-        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, -1, 1);
-        p.setMargins(dp(4), 0, 0, 0);
+        int s = dp(38 * scale); row.addView(sign, new LinearLayout.LayoutParams(s, s));
+        TextView dist = label(next ? "--" : "", 6.5f * scale, Ui.MUTED, false); dist.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, -1, 1); p.setMargins(dp(4), 0, 0, 0);
         row.addView(dist, p);
-        if (next) { nextLimitView = sign; nextDistanceView = dist; }
-        else limitView = sign;
+        if (next) { nextLimitView = sign; nextDistanceView = dist; } else limitView = sign;
         return row;
     }
 
     private View verticalCamera(float scale) {
-        LinearLayout row = new LinearLayout(this);
-        row.setGravity(Gravity.CENTER);
-        cameraView = label("CAM", 9 * scale, 0xFF111111, true);
-        cameraView.setGravity(Gravity.CENTER);
-        cameraView.setBackground(circle(0xFFFFB000, 0xFFFFB000, 1));
-        int s = dp(36 * scale);
-        row.addView(cameraView, new LinearLayout.LayoutParams(s, s));
-        cameraDistanceView = label("--", 7 * scale, Ui.MUTED, false);
-        cameraDistanceView.setGravity(Gravity.CENTER);
-        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, -1, 1);
-        p.setMargins(dp(4), 0, 0, 0);
+        LinearLayout row = new LinearLayout(this); row.setGravity(Gravity.CENTER);
+        TextView cam = label("CAM", 8 * scale, 0xFF111111, true); cam.setGravity(Gravity.CENTER);
+        cam.setBackground(circle(0xFFFFB000, 0xFFFFB000, 1));
+        int s = dp(34 * scale); row.addView(cam, new LinearLayout.LayoutParams(s, s));
+        cameraDistanceView = label("--", 6.5f * scale, Ui.MUTED, false); cameraDistanceView.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, -1, 1); p.setMargins(dp(4), 0, 0, 0);
         row.addView(cameraDistanceView, p);
         return row;
     }
@@ -372,12 +322,12 @@ public class SpeedBubbleService extends Service {
             if (limitView != null) limitView.setText(normalizeLimit(readString("limit", "--")));
             if (nextLimitView != null) nextLimitView.setText(normalizeLimit(readString("next_limit", "--")));
             if (nextDistanceView != null) nextDistanceView.setText(formatDistance(readInt("next_limit_distance_m", -1)));
-            int cameraDistance = readInt("camera_distance_m", -1);
-            if (cameraDistanceView != null) cameraDistanceView.setText(formatDistance(cameraDistance));
+            int camera = readInt("camera_distance_m", -1);
+            if (cameraDistanceView != null) cameraDistanceView.setText(formatDistance(camera));
             if (limitTile != null) limitTile.setVisibility(readBoolean("show_limit", true) ? View.VISIBLE : View.GONE);
             if (nextTile != null) nextTile.setVisibility(readBoolean("show_next_limit", true) ? View.VISIBLE : View.GONE);
             if (cameraTile != null) cameraTile.setVisibility(readBoolean("show_camera", true) ? View.VISIBLE : View.GONE);
-            maybeAlertCamera(cameraDistance);
+            maybeAlertCamera(camera);
         } catch (Throwable ignored) {}
     }
 
@@ -385,11 +335,13 @@ public class SpeedBubbleService extends Service {
         if ("vietmap_api".equals(readString("speed_source", "gps"))) {
             String road = readString("vietmap_road", "");
             if (road.isEmpty()) road = readString("vietmap_route_road", "");
+            String alert = readString("vietmap_alert_status", "");
             if (!road.isEmpty()) {
-                if (road.length() > 34) road = road.substring(0, 34) + "…";
+                if (road.length() > 28) road = road.substring(0, 28) + "…";
                 return "VIETMAP · " + road;
             }
-            return "VIETMAP API · GPS";
+            if (alert.startsWith("Đang")) return "VIETMAP SPEED ALERT · GPS";
+            return "VIETMAP MAPS · GPS";
         }
         return "GPS";
     }
@@ -402,15 +354,20 @@ public class SpeedBubbleService extends Service {
             locationListener = new LocationListener() {
                 @Override public void onLocationChanged(Location location) {
                     if (location == null) return;
-                    if (location.hasAccuracy() && location.getAccuracy() > 80f) return;
+                    if (location.hasAccuracy() && location.getAccuracy() > 100f) return;
                     float raw = location.hasSpeed() ? Math.max(0f, Math.min(300f, location.getSpeed() * 3.6f)) : 0f;
                     if (raw < 1.5f) raw = 0f;
                     if (smoothedSpeed < 0f) smoothedSpeed = raw;
-                    else smoothedSpeed += (raw > smoothedSpeed ? 0.45f : 0.28f) * (raw - smoothedSpeed);
+                    else smoothedSpeed += (raw > smoothedSpeed ? .45f : .28f) * (raw - smoothedSpeed);
                     int kmh = Math.round(smoothedSpeed);
                     prefs.edit().putString("speed", String.valueOf(kmh)).apply();
                     if (speedView != null) speedView.setText(String.valueOf(kmh));
-                    VietmapApiClient.maybeUpdate(SpeedBubbleService.this, location);
+
+                    if ("vietmap_api".equals(readString("speed_source", "gps"))) {
+                        // Every fix feeds the official Speed Alert bridge. The
+                        // Maps reverse/route part is throttled internally.
+                        VietmapApiClient.maybeUpdate(SpeedBubbleService.this, location);
+                    }
                 }
                 @Override public void onProviderDisabled(String provider) {}
                 @Override public void onProviderEnabled(String provider) {}
@@ -420,7 +377,7 @@ public class SpeedBubbleService extends Service {
                 locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 700L, 0f, locationListener);
             }
             if (locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
-                locationManager.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 1800L, 0f, locationListener);
+                locationManager.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 1600L, 0f, locationListener);
             }
         } catch (Throwable ignored) { locationListener = null; }
     }
@@ -446,23 +403,15 @@ public class SpeedBubbleService extends Service {
         return v;
     }
     private LinearLayout column() {
-        LinearLayout v = new LinearLayout(this);
-        v.setOrientation(LinearLayout.VERTICAL);
-        v.setGravity(Gravity.CENTER);
-        return v;
+        LinearLayout v = new LinearLayout(this); v.setOrientation(LinearLayout.VERTICAL); v.setGravity(Gravity.CENTER); return v;
     }
     private LinearLayout.LayoutParams weighted() {
-        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, -1, 1f);
-        p.setMargins(dp(2), 0, dp(2), 0);
-        return p;
+        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, -1, 1f); p.setMargins(dp(2), 0, dp(2), 0); return p;
     }
-    private TextView label(String text, float sp, int color, boolean bold) { return Ui.text(this, text, sp, color, bold); }
+    private TextView label(String t, float sp, int color, boolean bold) { return Ui.text(this, t, sp, color, bold); }
     private GradientDrawable circle(int fill, int stroke, int strokeDp) {
-        GradientDrawable d = new GradientDrawable();
-        d.setShape(GradientDrawable.OVAL);
-        d.setColor(fill);
-        if (stroke != Color.TRANSPARENT && strokeDp > 0) d.setStroke(dp(strokeDp), stroke);
-        return d;
+        GradientDrawable d = new GradientDrawable(); d.setShape(GradientDrawable.OVAL); d.setColor(fill);
+        if (stroke != Color.TRANSPARENT && strokeDp > 0) d.setStroke(dp(strokeDp), stroke); return d;
     }
 
     private void clampPosition() {
@@ -478,39 +427,33 @@ public class SpeedBubbleService extends Service {
                 || checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED;
     }
     private void disableAndStop() {
-        try { if (prefs != null) prefs.edit().putBoolean("bubble_enabled", false).apply(); } catch (Throwable ignored) {}
+        try { prefs.edit().putBoolean("bubble_enabled", false).apply(); } catch (Throwable ignored) {}
         stopSelf();
     }
     private void safeRemoveHud() {
-        if (windowManager != null && hud != null) try { windowManager.removeView(hud); } catch (Throwable ignored) {}
+        if (wm != null && hud != null) try { wm.removeView(hud); } catch (Throwable ignored) {}
         hud = null;
     }
-    private void clearViewRefs() {
+    private void clearRefs() {
         speedView = null; limitView = null; nextLimitView = null; nextDistanceView = null;
-        cameraView = null; cameraDistanceView = null; sourceView = null;
-        limitTile = null; nextTile = null; cameraTile = null;
+        cameraDistanceView = null; sourceView = null; limitTile = null; nextTile = null; cameraTile = null;
     }
-    private Map<String, ?> allPrefs() {
+    private Map<String, ?> all() {
         try { return prefs == null ? Collections.emptyMap() : prefs.getAll(); }
         catch (Throwable ignored) { return Collections.emptyMap(); }
     }
     private String readString(String key, String fallback) {
-        Object v = allPrefs().get(key);
-        if (v == null) return fallback;
-        String s = String.valueOf(v).trim();
-        return s.isEmpty() ? fallback : s;
+        Object v = all().get(key); if (v == null) return fallback;
+        String s = String.valueOf(v).trim(); return s.isEmpty() ? fallback : s;
     }
     private int readInt(String key, int fallback) {
-        Object v = allPrefs().get(key);
-        if (v instanceof Number) return ((Number) v).intValue();
-        if (v != null) try { return Integer.parseInt(String.valueOf(v).trim()); } catch (Throwable ignored) {}
-        return fallback;
+        Object v = all().get(key); if (v instanceof Number) return ((Number) v).intValue();
+        try { return v == null ? fallback : Integer.parseInt(String.valueOf(v).trim()); }
+        catch (Throwable ignored) { return fallback; }
     }
     private boolean readBoolean(String key, boolean fallback) {
-        Object v = allPrefs().get(key);
-        if (v instanceof Boolean) return (Boolean) v;
-        if (v != null) return Boolean.parseBoolean(String.valueOf(v));
-        return fallback;
+        Object v = all().get(key); if (v instanceof Boolean) return (Boolean) v;
+        return v == null ? fallback : Boolean.parseBoolean(String.valueOf(v));
     }
     private String normalizeLimit(String value) {
         try { int n = Integer.parseInt(value.trim()); return n > 0 && n <= 200 ? String.valueOf(n) : "--"; }
@@ -526,10 +469,12 @@ public class SpeedBubbleService extends Service {
 
     @Override public void onDestroy() {
         try { if (prefs != null) prefs.unregisterOnSharedPreferenceChangeListener(prefListener); } catch (Throwable ignored) {}
-        if (locationManager != null && locationListener != null) try { locationManager.removeUpdates(locationListener); } catch (Throwable ignored) {}
+        if (locationManager != null && locationListener != null) {
+            try { locationManager.removeUpdates(locationListener); } catch (Throwable ignored) {}
+        }
+        VietmapSpeedAlertBridge.stop(this);
         safeRemoveHud();
         if (tone != null) try { tone.release(); } catch (Throwable ignored) {}
-        tone = null;
         try { stopForeground(STOP_FOREGROUND_REMOVE); } catch (Throwable ignored) {}
         super.onDestroy();
     }
