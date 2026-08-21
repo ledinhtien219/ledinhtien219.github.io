@@ -10,8 +10,8 @@ android {
         applicationId 'com.demo.mycarview'
         minSdk 26
         targetSdk 35
-        versionCode 26
-        versionName '0.7.3'
+        versionCode 27
+        versionName '0.8.0'
     }
 
     buildTypes {
@@ -31,6 +31,8 @@ android {
 }
 
 dependencies {
-    implementation 'androidx.car.app:app:1.7.0'
-    implementation 'androidx.car.app:app-projected:1.7.0'
+    // 1.4.0 only uses the mature protocol surface needed by this build and is
+    // intentionally chosen for wider compatibility with older Android Auto hosts.
+    implementation 'androidx.car.app:app:1.4.0'
+    implementation 'androidx.car.app:app-projected:1.4.0'
 }
