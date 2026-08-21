@@ -3,58 +3,35 @@ package com.demo.mycarview;
 import android.Manifest;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
-import android.os.Handler;
-import android.os.Looper;
 
 import androidx.annotation.NonNull;
 import androidx.car.app.CarContext;
 import androidx.car.app.Screen;
 import androidx.car.app.model.Action;
-import androidx.car.app.model.Pane;
-import androidx.car.app.model.PaneTemplate;
-import androidx.car.app.model.Row;
+import androidx.car.app.model.MessageTemplate;
 import androidx.car.app.model.Template;
-import androidx.lifecycle.Lifecycle;
-import androidx.lifecycle.LifecycleEventObserver;
 
 /**
- * Conservative Android Auto HUD screen.
+ * Maximum-compatibility Android Auto screen for CarHUD.
  *
- * Uses PaneTemplate because some Android Auto hosts reject GridTemplate for POI
- * apps and show a generic "unexpected error" screen. PaneTemplate is broadly
- * supported and keeps the four HUD values visible without a map surface.
+ * Some OEM/AA hosts reject GridTemplate or multi-row PaneTemplate for this POI
+ * entry and display the generic "unexpected error" screen. MessageTemplate is
+ * the same conservative template family that previously opened successfully on
+ * this host, so this screen deliberately avoids lists, grids, surface callbacks
+ * and periodic invalidation.
  */
 public class CarViewCarScreen extends Screen {
     private static final String PREFS = "carview_settings";
-    private final Handler handler = new Handler(Looper.getMainLooper());
-    private boolean updating;
-
-    private final Runnable refresh = new Runnable() {
-        @Override public void run() {
-            if (!updating) return;
-            try { invalidate(); } catch (Throwable ignored) {}
-            handler.postDelayed(this, 2000L);
-        }
-    };
 
     public CarViewCarScreen(@NonNull CarContext carContext) {
         super(carContext);
-        getLifecycle().addObserver((LifecycleEventObserver) (source, event) -> {
-            if (event == Lifecycle.Event.ON_START) {
-                updating = true;
-                handler.removeCallbacks(refresh);
-                handler.postDelayed(refresh, 500L);
-            } else if (event == Lifecycle.Event.ON_STOP || event == Lifecycle.Event.ON_DESTROY) {
-                updating = false;
-                handler.removeCallbacks(refresh);
-            }
-        });
     }
 
     @NonNull
     @Override
     public Template onGetTemplate() {
         SharedPreferences prefs = getCarContext().getSharedPreferences(PREFS, CarContext.MODE_PRIVATE);
+
         String speed = readString(prefs, "speed", "0");
         String limit = normalizeLimit(readString(prefs, "limit", "--"));
         int camera = readInt(prefs, "camera_distance_m", -1);
@@ -67,25 +44,14 @@ public class CarViewCarScreen extends Screen {
                 || getCarContext().checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION)
                 == PackageManager.PERMISSION_GRANTED;
 
-        Pane.Builder pane = new Pane.Builder();
-        pane.addRow(new Row.Builder()
-                .setTitle((hasLocation ? speed : "--") + " km/h")
-                .addText("Tốc độ hiện tại")
-                .build());
-        pane.addRow(new Row.Builder()
-                .setTitle("Giới hạn: " + limit + " km/h")
-                .addText("Nguồn: " + sourceLabel(source))
-                .build());
-        pane.addRow(new Row.Builder()
-                .setTitle("Giới hạn kế: " + nextLimit + " km/h")
-                .addText("Sau " + formatDistance(nextDistance))
-                .build());
-        pane.addRow(new Row.Builder()
-                .setTitle("Camera phía trước")
-                .addText(formatDistance(camera))
-                .build());
+        String message =
+                "Tốc độ: " + (hasLocation ? speed : "--") + " km/h"
+                + "\nGiới hạn: " + limit + " km/h"
+                + "\nGiới hạn kế: " + nextLimit + " km/h · " + formatDistance(nextDistance)
+                + "\nCamera: " + formatDistance(camera)
+                + "\nNguồn: " + sourceLabel(source);
 
-        return new PaneTemplate.Builder(pane.build())
+        return new MessageTemplate.Builder(message)
                 .setTitle("CarHUD")
                 .setHeaderAction(Action.APP_ICON)
                 .build();
